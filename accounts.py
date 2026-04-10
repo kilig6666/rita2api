@@ -34,12 +34,21 @@ class Account:
     """单个 Rita 账号"""
 
     def __init__(self, token: str, visitorid: str = "",
-                 name: str = "", enabled: bool = True, id: str = "", **_kw):
+                 name: str = "", enabled: bool = True, id: str = "",
+                 email: str = "", password: str = "",
+                 mail_provider: str = "", mail_api_key: str = "",
+                 **_kw):
         self.id = id or uuid.uuid4().hex[:8]
         self.name = name or f"account-{self.id}"
         self.token = token
         self.visitorid = visitorid
         self.enabled = enabled
+
+        # Credentials for token refresh
+        self.email = email
+        self.password = password
+        self.mail_provider = mail_provider      # "gptmail" | "yydsmail" | ""
+        self.mail_api_key = mail_api_key        # per-account mail API key (optional)
 
         # Runtime stats (not persisted)
         self.failures = 0
@@ -65,6 +74,10 @@ class Account:
             "visitorid": self.visitorid,
             "enabled": self.enabled,
             "created_at": self.created_at,
+            "email": self.email,
+            "password": self.password,
+            "mail_provider": self.mail_provider,
+            "mail_api_key": self.mail_api_key,
         }
 
     def to_status(self) -> dict:
@@ -86,6 +99,11 @@ class Account:
             "token_valid": self.token_valid,
             "last_health_check": self.last_health_check,
             "disabled_reason": self.disabled_reason,
+            "email": self.email,
+            "password_set": bool(self.password),
+            "mail_provider": self.mail_provider,
+            "mail_api_key_set": bool(self.mail_api_key),
+            "refreshable": bool(self.email),
         }
 
     @staticmethod
@@ -171,10 +189,14 @@ class AccountManager:
                     return acc
         return None
 
-    def add(self, token: str, visitorid: str = "", name: str = "") -> Account:
+    def add(self, token: str, visitorid: str = "", name: str = "",
+            email: str = "", password: str = "",
+            mail_provider: str = "", mail_api_key: str = "") -> Account:
         """Add a single account"""
         with self._lock:
-            acc = Account(token=token, visitorid=visitorid, name=name)
+            acc = Account(token=token, visitorid=visitorid, name=name,
+                          email=email, password=password,
+                          mail_provider=mail_provider, mail_api_key=mail_api_key)
             self._accounts.append(acc)
             self._save()
             return acc
@@ -191,6 +213,10 @@ class AccountManager:
                     token=token,
                     visitorid=item.get("visitorid", "").strip(),
                     name=item.get("name", "").strip(),
+                    email=item.get("email", "").strip(),
+                    password=item.get("password", "").strip(),
+                    mail_provider=item.get("mail_provider", "").strip(),
+                    mail_api_key=item.get("mail_api_key", "").strip(),
                 )
                 self._accounts.append(acc)
                 added.append(acc)
@@ -202,14 +228,10 @@ class AccountManager:
         with self._lock:
             for acc in self._accounts:
                 if acc.id == account_id:
-                    if "name" in fields:
-                        acc.name = fields["name"]
-                    if "token" in fields:
-                        acc.token = fields["token"]
-                    if "visitorid" in fields:
-                        acc.visitorid = fields["visitorid"]
-                    if "enabled" in fields:
-                        acc.enabled = fields["enabled"]
+                    for key in ("name", "token", "visitorid", "enabled",
+                                "email", "password", "mail_provider", "mail_api_key"):
+                        if key in fields:
+                            setattr(acc, key, fields[key])
                     self._save()
                     return acc
         return None

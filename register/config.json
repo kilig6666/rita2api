@@ -1,0 +1,39 @@
+{
+    "total_accounts": 3,
+    "max_workers": 2,
+    "password": "@qazwsx123456",
+
+    "_comment_mail": "邮箱服务: gptmail 或 yydsmail",
+    "mail_provider": "gptmail",
+
+    "_comment_gptmail": "GPTMail 配置",
+    "gptmail_api_base": "https://mail.chatgpt.org.uk",
+    "gptmail_api_key": "sk-vq6m0PuO",
+
+    "_comment_yydsmail": "YYDS Mail 配置",
+    "yydsmail_api_base": "https://maliapi.215.im/v1",
+    "yydsmail_api_key": "AC-556562fc24a6adf7d0eeb32e",
+
+    "_comment_captcha": "YesCaptcha reCAPTCHA Enterprise",
+    "yescaptcha_client_key": "638159964e9b9eda7b2b31408ab6502c4d4f28a0101853",
+    "yescaptcha_website_key": "6Lej6N4hAAAAANgkiQRXxLrlue_J_y035Dm6UhPk",
+    "yescaptcha_website_url": "https://account.rita.ai",
+    "yescaptcha_task_type": "NoCaptchaTaskProxyless",
+
+    "_comment_rita": "Rita 注册 API",
+    "rita_account_api": "https://accountapi.gosplit.net",
+    "rita_origin": "https://account.rita.ai",
+    "rita_redirect_uri": "https://www.rita.ai/zh",
+    "rita_language": "zh",
+
+    "_comment_proxy": "代理设置 (http/https/socks5)，mail_use_proxy 控制邮箱服务是否走代理",
+    "proxy": "http://127.0.0.1:10810",
+    "mail_use_proxy": false,
+
+    "_comment_upload": "注册成功后上传到 rita2api",
+    "upload_enabled": true,
+    "upload_api_url": "http://localhost:10089/api/accounts/batch",
+
+    "_comment_output": "输出文件",
+    "output_file": "registered_accounts.txt"
+}

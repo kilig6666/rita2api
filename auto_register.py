@@ -33,6 +33,10 @@ YESCAPTCHA_API = "https://api.yescaptcha.com"
 GPTMAIL_API_KEY = os.getenv("GPTMAIL_API_KEY", "")
 GPTMAIL_API_BASE = os.getenv("GPTMAIL_API_BASE", "https://mail.chatgpt.org.uk")
 
+# YYDS Mail config
+YYDSMAIL_API_KEY = os.getenv("YYDSMAIL_API_KEY", "")
+YYDSMAIL_API_BASE = os.getenv("YYDSMAIL_API_BASE", "https://maliapi.215.im/v1")
+
 # Rita.ai reCAPTCHA v2 sitekey (from account.rita.ai JS bundle)
 RECAPTCHA_SITEKEY = "6Lej6N4hAAAAANgkiQRXxLrlue_J_y035Dm6UhPk"
 RECAPTCHA_URL = "https://account.rita.ai"
@@ -379,7 +383,11 @@ def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict 
         if account_manager:
             # Derive a name from email
             name_part = email.split("@")[0]
-            acc = account_manager.add(token=token, name=f"auto-{name_part}")
+            acc = account_manager.add(
+                token=token, name=f"auto-{name_part}",
+                email=email, password=AUTO_REGISTER_PASSWORD,
+                mail_provider="gptmail", mail_api_key=GPTMAIL_API_KEY,
+            )
             account_id = acc.id
             _log(f"➕ Account added: {acc.name} ({acc.id})", "SUCCESS")
 
@@ -478,8 +486,210 @@ def check_config() -> dict:
         "yescaptcha_configured": bool(YESCAPTCHA_KEY),
         "gptmail_configured": bool(GPTMAIL_API_KEY),
         "gptmail_api_base": GPTMAIL_API_BASE,
+        "yydsmail_configured": bool(YYDSMAIL_API_KEY),
+        "yydsmail_api_base": YYDSMAIL_API_BASE,
         "recaptcha_sitekey": RECAPTCHA_SITEKEY,
         "min_active_accounts": AUTO_REGISTER_MIN_ACTIVE,
         "batch_size": AUTO_REGISTER_BATCH,
-        "ready": bool(YESCAPTCHA_KEY and GPTMAIL_API_KEY),
+        "ready": bool(YESCAPTCHA_KEY and (GPTMAIL_API_KEY or YYDSMAIL_API_KEY)),
     }
+
+
+# ===================== YYDS Mail Support =====================
+def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
+                            timeout: int = 120) -> str | None:
+    """Poll YYDS Mail for verification code. Needs a mail_token from account creation."""
+    api_key = mail_api_key or YYDSMAIL_API_KEY
+    if not api_key:
+        _log("⚠️ YYDS Mail: no API key", "WARNING")
+        return None
+
+    headers = {"X-API-Key": api_key}
+    start = time.time()
+
+    # For YYDS Mail we need to create a session for the email first
+    # We'll look up messages using the address as identifier
+    while time.time() - start < timeout:
+        try:
+            resp = requests.get(
+                f"{YYDSMAIL_API_BASE}/messages",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=15,
+                verify=not _DISABLE_SSL_VERIFY,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                messages = data if isinstance(data, list) else data.get("data", [])
+                for msg in messages:
+                    msg_id = msg.get("id")
+                    if not msg_id:
+                        continue
+                    detail_resp = requests.get(
+                        f"{YYDSMAIL_API_BASE}/messages/{msg_id}",
+                        headers={"Authorization": f"Bearer {api_key}"},
+                        timeout=15,
+                        verify=not _DISABLE_SSL_VERIFY,
+                    )
+                    if detail_resp.status_code == 200:
+                        detail = detail_resp.json()
+                        detail_data = detail.get("data", detail) if isinstance(detail, dict) else detail
+                        content = (detail_data.get("text", "") or
+                                   detail_data.get("html", "") or "")
+                        code = _extract_code(content)
+                        if code:
+                            return code
+        except Exception as e:
+            _log(f"📧 YYDS Mail poll error: {e}", "DEBUG")
+
+        elapsed = int(time.time() - start)
+        _log(f"📧 YYDS Mail waiting... ({elapsed}s/{timeout}s)", "DEBUG")
+        time.sleep(4)
+
+    return None
+
+
+def wait_for_code_by_provider(email: str, mail_provider: str = "",
+                              mail_api_key: str = "",
+                              timeout: int = 120) -> str | None:
+    """Wait for verification code using the appropriate mail provider."""
+    provider = (mail_provider or "gptmail").lower().strip()
+
+    if provider == "yydsmail":
+        return _yydsmail_wait_for_code(email, mail_api_key, timeout)
+    else:
+        # Default to GPTMail
+        return wait_for_verification_code(email, timeout)
+
+
+# ===================== Token Refresh (Re-login existing account) =====================
+def refresh_account_token(email: str, password: str = "",
+                          mail_provider: str = "", mail_api_key: str = "") -> dict:
+    """
+    Re-login an existing Rita.ai account to get a fresh token.
+
+    For existing accounts, the sign_process will detect the account exists
+    (process != 1) and may allow login with email code without reCAPTCHA,
+    or may still require reCAPTCHA.
+
+    Returns: {"token": "...", "email": "...", "ticket": "..."}
+    """
+    session = requests.Session()
+    session.verify = not _DISABLE_SSL_VERIFY
+    headers = _gosplit_headers()
+
+    # Step 1: authorize/url
+    _log(f"🔄 Refresh: authorize/url (email={email})", "DEBUG")
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/url",
+        headers=headers,
+        json={"login_url": "https://account.rita.ai", "source_url": "https://www.rita.ai"},
+        timeout=15,
+    )
+    r.raise_for_status()
+
+    # Step 2: authenticate (init)
+    _log("🔄 Refresh: authenticate init", "DEBUG")
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/authenticate",
+        headers=headers,
+        json={"redirect_uri": "https://www.rita.ai/zh/ai-chat"},
+        timeout=15,
+    )
+    r.raise_for_status()
+
+    # Step 3: sign_process — submit email
+    _log("🔄 Refresh: sign_process (email)", "DEBUG")
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/sign_process",
+        headers=headers,
+        json={"redirect_uri": "https://www.rita.ai/zh/ai-chat", "language": "zh", "email": email},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+    process = data.get("data", {}).get("process")
+    _log(f"   process={process}", "DEBUG")
+
+    # Step 4: sign_process — agree
+    _log("🔄 Refresh: sign_process (agree)", "DEBUG")
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/sign_process",
+        headers=headers,
+        json={"redirect_uri": "https://www.rita.ai/zh/ai-chat", "language": "zh",
+              "email": email, "agree": 1},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+
+    # Step 5: handle captcha if needed
+    if data.get("data", {}).get("need_captcha"):
+        _log("🔄 Refresh: solving reCAPTCHA...", "INFO")
+        captcha_response = solve_recaptcha()
+        if not captcha_response:
+            raise Exception("Failed to solve reCAPTCHA for refresh")
+
+        r = session.post(
+            f"{GOSPLIT_API}/authorize/sign_process",
+            headers=headers,
+            json={
+                "redirect_uri": "https://www.rita.ai/zh/ai-chat",
+                "language": "zh",
+                "g-recaptcha-response": captcha_response,
+            },
+            timeout=15,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if data.get("code") != 0:
+            raise Exception(f"Refresh captcha failed: {data}")
+
+    # Step 6: wait for email verification code
+    _log("🔄 Refresh: waiting for email code...", "INFO")
+    code = wait_for_code_by_provider(email, mail_provider, mail_api_key, timeout=120)
+    if not code:
+        raise Exception(f"Failed to receive verification code for {email}")
+
+    _log(f"📧 Refresh: got code {code}", "DEBUG")
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/code_sign",
+        headers=headers,
+        json={
+            "email": email, "code": code,
+            "redirect_uri": "https://www.rita.ai/zh/ai-chat",
+            "language": "zh", "agreeTC": 1,
+        },
+        timeout=15,
+    )
+    r.raise_for_status()
+    code_sign_data = r.json()
+    if code_sign_data.get("code") != 0:
+        raise Exception(f"Refresh code_sign failed: {code_sign_data}")
+
+    # Extract token
+    token = code_sign_data.get("data", {}).get("token", "")
+    if not token:
+        token = session.cookies.get("token", "")
+    if not token:
+        for cookie in r.cookies:
+            if cookie.name == "token":
+                token = cookie.value
+                break
+    if not token:
+        raise Exception(f"No token in refresh response: {code_sign_data}")
+
+    # Step 7: authenticate with new token
+    _log("🔄 Refresh: authenticate (get ticket)", "DEBUG")
+    auth_headers = {**headers, "token": token}
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/authenticate",
+        headers=auth_headers,
+        json={"redirect_uri": "https://www.rita.ai/zh/ai-chat"},
+        timeout=15,
+    )
+    r.raise_for_status()
+    auth_data = r.json()
+    ticket = auth_data.get("data", {}).get("ticket", "")
+
+    _log(f"✅ Token refreshed! token={token[:8]}...", "SUCCESS")
+    return {"token": token, "email": email, "ticket": ticket}

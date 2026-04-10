@@ -10,9 +10,10 @@ import os
 import re
 import time
 import hashlib
+import datetime
 import requests
 from dotenv import load_dotenv
-from flask import Flask, request, Response, jsonify, render_template
+from flask import Flask, request, Response, jsonify, render_template, session
 from threading import Lock
 
 # MUST load .env before importing AccountManager (which reads env vars at module level)
@@ -29,10 +30,74 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "10089"))
 # Disable SSL verification for api_v2.rita.ai (hostname mismatch in upstream cert)
 DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "")
 
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24).hex())
 acm = AccountManager()
 _conv_lock = Lock()
+
+# ===================== Auth Middleware =====================
+def _check_auth() -> bool:
+    """Return True if the request is authenticated (or auth is disabled)."""
+    if not AUTH_TOKEN:
+        return True
+    # Check Authorization header
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN:
+        return True
+    # Check query param
+    if request.args.get("auth") == AUTH_TOKEN:
+        return True
+    # Check session cookie
+    if session.get("auth_token") == AUTH_TOKEN:
+        return True
+    return False
+
+@app.before_request
+def require_auth():
+    path = request.path
+    # Always allow: root WebUI page and /v1/* (client-facing proxy)
+    if path == "/" or path.startswith("/v1/") or path == "/health":
+        return None
+    # Require auth for /api/* and /debug/*
+    if path.startswith("/api/") or path.startswith("/debug/"):
+        # Allow the login and auth-check endpoints without auth
+        if path in ("/api/login", "/api/auth/check"):
+            return None
+        if not _check_auth():
+            return jsonify({"error": "Unauthorized", "auth_required": True}), 401
+    return None
+
+# ===================== Usage Statistics =====================
+_stats_lock = Lock()
+_usage_stats = {
+    "total_requests": 0,
+    "total_tokens_approx": 0,
+    "requests_by_model": {},
+    "requests_today": 0,
+    "requests_today_date": datetime.date.today().isoformat(),
+    "last_reset": time.time(),
+    "uptime_start": time.time(),
+}
+
+def _increment_stats(model: str, messages: list, response_text: str = ""):
+    with _stats_lock:
+        # Reset today counter if day changed
+        today = datetime.date.today().isoformat()
+        if _usage_stats["requests_today_date"] != today:
+            _usage_stats["requests_today"] = 0
+            _usage_stats["requests_today_date"] = today
+
+        _usage_stats["total_requests"] += 1
+        _usage_stats["requests_today"] += 1
+        _usage_stats["requests_by_model"][model] = \
+            _usage_stats["requests_by_model"].get(model, 0) + 1
+
+        # Rough token estimate: chars / 4
+        msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        resp_chars = len(response_text)
+        _usage_stats["total_tokens_approx"] += (msg_chars + resp_chars) // 4
 
 # In-memory conversation state
 _conversation_state: dict[str, dict] = {}
@@ -223,6 +288,44 @@ def webui():
     return render_template("index.html")
 
 # =========================================================================
+#  Auth API
+# =========================================================================
+@app.route("/api/login", methods=["POST"])
+def api_login():
+    data = request.json or {}
+    token = data.get("token", "").strip()
+    if not AUTH_TOKEN:
+        # No auth configured — always succeed
+        return jsonify({"ok": True, "auth_required": False})
+    if token == AUTH_TOKEN:
+        session["auth_token"] = AUTH_TOKEN
+        return jsonify({"ok": True, "auth_required": True})
+    return jsonify({"ok": False, "error": "Invalid token"}), 401
+
+@app.route("/api/auth/check", methods=["GET"])
+def api_auth_check():
+    return jsonify({
+        "auth_required": bool(AUTH_TOKEN),
+        "authenticated": _check_auth(),
+    })
+
+# =========================================================================
+#  Stats API
+# =========================================================================
+@app.route("/api/stats", methods=["GET"])
+def api_stats():
+    with _stats_lock:
+        uptime_secs = int(time.time() - _usage_stats["uptime_start"])
+        return jsonify({
+            "total_requests": _usage_stats["total_requests"],
+            "total_tokens_approx": _usage_stats["total_tokens_approx"],
+            "requests_by_model": dict(_usage_stats["requests_by_model"]),
+            "requests_today": _usage_stats["requests_today"],
+            "uptime_seconds": uptime_secs,
+            "uptime_start": _usage_stats["uptime_start"],
+        })
+
+# =========================================================================
 #  Account Management API  (/api/accounts/*)
 # =========================================================================
 @app.route("/api/accounts", methods=["GET"])
@@ -235,7 +338,7 @@ def api_account_summary():
 
 @app.route("/api/accounts", methods=["POST"])
 def api_add_account():
-    """Add a single account: {token, visitorid?, name?}"""
+    """Add a single account: {token, visitorid?, name?, email?, password?, mail_provider?, mail_api_key?}"""
     data = request.json or {}
     token = data.get("token", "").strip()
     if not token:
@@ -244,6 +347,10 @@ def api_add_account():
         token=token,
         visitorid=data.get("visitorid", "").strip(),
         name=data.get("name", "").strip(),
+        email=data.get("email", "").strip(),
+        password=data.get("password", "").strip(),
+        mail_provider=data.get("mail_provider", "").strip(),
+        mail_api_key=data.get("mail_api_key", "").strip(),
     )
     log(f"➕ Account added: {acc.name} ({acc.id})", "SUCCESS")
     return jsonify({"ok": True, "account": acc.to_status()}), 201
@@ -307,6 +414,32 @@ def api_test_all():
         if r.get("ok"):
             ok_count += 1
     return jsonify({"results": results, "total": len(accounts), "ok_count": ok_count})
+
+@app.route("/api/accounts/<account_id>/refresh", methods=["POST"])
+def api_refresh_account(account_id):
+    """Re-login to get a fresh token using stored email credentials."""
+    acc = acm.get(account_id)
+    if not acc:
+        return jsonify({"error": "not found"}), 404
+    if not acc.email:
+        return jsonify({"error": "no email stored for this account, cannot refresh"}), 400
+
+    log(f"🔄 Refreshing token for {acc.name} (email={acc.email})...", "INFO")
+    try:
+        result = auto_register.refresh_account_token(
+            email=acc.email,
+            password=acc.password,
+            mail_provider=acc.mail_provider,
+            mail_api_key=acc.mail_api_key,
+        )
+        new_token = result["token"]
+        # Update account with new token and re-enable
+        acm.reactivate_account(account_id, new_token=new_token)
+        log(f"✅ Token refreshed for {acc.name}", "SUCCESS")
+        return jsonify({"ok": True, "account": acc.to_status()})
+    except Exception as e:
+        log(f"❌ Token refresh failed for {acc.name}: {e}", "ERROR")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/accounts/reset", methods=["POST"])
 def api_reset_failures():
@@ -634,6 +767,7 @@ def chat_completions():
     client_tools = data.get("tools", [])
 
     log(f"📥 /v1/chat/completions model={model} stream={stream} msgs={len(messages)} tools={len(client_tools)}", "INFO")
+    _increment_stats(model, messages)
 
     if not messages:
         return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error"}}), 400
