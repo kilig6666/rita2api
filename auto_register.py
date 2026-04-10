@@ -693,3 +693,48 @@ def refresh_account_token(email: str, password: str = "",
 
     _log(f"✅ Token refreshed! token={token[:8]}...", "SUCCESS")
     return {"token": token, "email": email, "ticket": ticket}
+
+
+# ===================== Ticket Re-login (use existing token) =====================
+def relogin_for_ticket(token: str) -> dict:
+    """
+    Re-authenticate with an existing token to get a fresh ticket.
+    This is the simplest flow — just call authenticate with the token header.
+
+    Returns: {"ticket": "..."} or raises Exception
+    """
+    session = requests.Session()
+    session.verify = not _DISABLE_SSL_VERIFY
+    headers = _gosplit_headers()
+    headers["token"] = token
+
+    # Step 1: authorize/url
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/url",
+        headers=_gosplit_headers(),
+        json={"login_url": "https://account.rita.ai", "source_url": "https://www.rita.ai"},
+        timeout=15,
+    )
+    r.raise_for_status()
+
+    # Step 2: authenticate with token
+    r = session.post(
+        f"{GOSPLIT_API}/authorize/authenticate",
+        headers=headers,
+        json={"redirect_uri": "https://www.rita.ai/zh/ai-chat"},
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+
+    ticket = data.get("data", {}).get("ticket", "")
+    status = data.get("data", {}).get("status", False)
+
+    if ticket:
+        _log(f"🎫 Got ticket: {ticket[:8]}...", "SUCCESS")
+        return {"ticket": ticket}
+    elif status:
+        # status=true means token is valid but no ticket in response
+        return {"ticket": "", "message": "Token valid but no ticket returned"}
+    else:
+        raise Exception(f"Authentication failed: {data}")

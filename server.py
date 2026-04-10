@@ -21,6 +21,8 @@ load_dotenv()
 
 from accounts import AccountManager
 import auto_register
+from quota import get_cost, get_all_costs
+from database import get_db
 
 # ===================== Configuration =====================
 DEBUG_MODE = os.getenv("DEBUG", "1") == "1"
@@ -314,16 +316,19 @@ def api_auth_check():
 # =========================================================================
 @app.route("/api/stats", methods=["GET"])
 def api_stats():
+    db = get_db()
+    db_stats = db.get_usage_stats()
     with _stats_lock:
         uptime_secs = int(time.time() - _usage_stats["uptime_start"])
-        return jsonify({
-            "total_requests": _usage_stats["total_requests"],
-            "total_tokens_approx": _usage_stats["total_tokens_approx"],
-            "requests_by_model": dict(_usage_stats["requests_by_model"]),
-            "requests_today": _usage_stats["requests_today"],
-            "uptime_seconds": uptime_secs,
-            "uptime_start": _usage_stats["uptime_start"],
-        })
+    summary = acm.summary()
+    return jsonify({
+        **db_stats,
+        "uptime_seconds": uptime_secs,
+        "uptime_start": _usage_stats["uptime_start"],
+        "total_quota": summary.get("total_quota", 0),
+        "active_accounts": summary.get("active", 0),
+        "model_costs": get_all_costs(),
+    })
 
 # =========================================================================
 #  Account Management API  (/api/accounts/*)
@@ -507,6 +512,111 @@ def api_run_health_check():
         "ok_count": ok_count,
         "auto_disabled": disabled_count,
     })
+
+
+# =========================================================================
+#  Mail Verification Code Query API
+# =========================================================================
+@app.route("/api/mail/check-code", methods=["POST"])
+def api_check_mail_code():
+    """Query the latest verification code for an email address.
+    Body: { "email": "...", "mail_provider": "gptmail", "mail_api_key": "..." }
+    """
+    data = request.json or {}
+    email = data.get("email", "").strip()
+    if not email:
+        return jsonify({"error": "email is required"}), 400
+
+    mail_provider = data.get("mail_provider", "gptmail").strip()
+    mail_api_key = data.get("mail_api_key", "").strip()
+
+    try:
+        code = auto_register.wait_for_code_by_provider(
+            email=email,
+            mail_provider=mail_provider,
+            mail_api_key=mail_api_key,
+            timeout=15,  # Quick check, not full wait
+        )
+        if code:
+            return jsonify({"ok": True, "code": code, "email": email})
+        else:
+            return jsonify({"ok": False, "message": "No verification code found", "email": email})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/mail/status", methods=["GET"])
+def api_mail_status():
+    """Return mail service configuration status."""
+    db = get_db()
+    return jsonify({
+        "gptmail": {
+            "configured": bool(db.get_config("GPTMAIL_API_KEY")),
+            "api_base": db.get_config("GPTMAIL_API_BASE", "https://mail.chatgpt.org.uk"),
+        },
+        "yydsmail": {
+            "configured": bool(db.get_config("YYDSMAIL_API_KEY")),
+            "api_base": db.get_config("YYDSMAIL_API_BASE", "https://maliapi.215.im/v1"),
+        },
+    })
+
+
+# =========================================================================
+#  Ticket API (re-login to get ticket)
+# =========================================================================
+@app.route("/api/accounts/<account_id>/ticket", methods=["POST"])
+def api_get_ticket(account_id):
+    """Get a fresh ticket for an account by re-authenticating with its token."""
+    acc = acm.get(account_id)
+    if not acc:
+        return jsonify({"error": "not found"}), 404
+
+    if not acc.token:
+        return jsonify({"error": "no token set"}), 400
+
+    try:
+        result = auto_register.relogin_for_ticket(acc.token)
+        if result.get("ticket"):
+            return jsonify({"ok": True, "ticket": result["ticket"]})
+        else:
+            return jsonify({"ok": False, "message": "Could not get ticket, token may be expired"})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+# =========================================================================
+#  Config Management API
+# =========================================================================
+@app.route("/api/config", methods=["GET"])
+def api_get_config():
+    """Return all config key-value pairs."""
+    db = get_db()
+    configs = db.get_all_config()
+    # Mask sensitive values for display
+    for c in configs:
+        key = c["key"].upper()
+        if any(s in key for s in ("TOKEN", "KEY", "PASSWORD", "SECRET")):
+            val = c["value"]
+            if val:
+                c["value_masked"] = val[:4] + "***" + val[-4:] if len(val) > 8 else "***"
+            else:
+                c["value_masked"] = ""
+        else:
+            c["value_masked"] = c["value"]
+    return jsonify({"configs": configs})
+
+@app.route("/api/config", methods=["PUT"])
+def api_set_config():
+    """Update config values. Body: { "configs": { "key": "value", ... } }"""
+    data = request.json or {}
+    configs = data.get("configs", {})
+    if not configs:
+        return jsonify({"error": "configs dict is required"}), 400
+    db = get_db()
+    for key, value in configs.items():
+        db.set_config(key, value)
+    log(f"Config updated: {list(configs.keys())}", "INFO")
+    return jsonify({"ok": True, "updated": list(configs.keys())})
 
 
 # =========================================================================
@@ -827,6 +937,13 @@ def chat_completions():
         resp.raise_for_status()
         if acc:
             acm.mark_ok(acc)
+            # Deduct quota points based on model
+            cost = get_cost(rita_model)
+            acm.deduct_quota(acc.id, cost)
+            # Log usage to database
+            db = get_db()
+            msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+            db.log_usage(acc.id, model, msg_chars // 4)
 
         if stream:
             def gen():
