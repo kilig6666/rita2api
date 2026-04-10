@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>rita2api 管理面板</title>
+<style>
+:root {
+  --bg: #0f1117;
+  --card: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e4e4e7;
+  --text2: #9ca3af;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #eab308;
+  --orange: #f97316;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+.container { max-width: 1200px; margin: 0 auto; padding: 24px; }
+
+/* Header */
+.header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
+}
+.header h1 { font-size: 24px; font-weight: 700; }
+.header h1 span { color: var(--accent); }
+.header-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Stats Bar */
+.stats-bar {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 12px; margin-bottom: 24px;
+}
+.stat-card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px; text-align: center;
+}
+.stat-card .num { font-size: 28px; font-weight: 700; }
+.stat-card .label { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.stat-card.green .num { color: var(--green); }
+.stat-card.red .num { color: var(--red); }
+.stat-card.yellow .num { color: var(--yellow); }
+.stat-card.blue .num { color: var(--accent); }
+
+/* Buttons */
+.btn {
+  padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px;
+  cursor: pointer; font-weight: 500; transition: all .15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { background: #dc2626; }
+.btn-outline {
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+}
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-success:hover { background: #16a34a; }
+.btn-warning { background: var(--orange); color: #fff; }
+.btn-warning:hover { background: #ea580c; }
+
+/* Table */
+.table-wrap {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+table { width: 100%; border-collapse: collapse; }
+th {
+  text-align: left; padding: 12px 16px; font-size: 12px;
+  color: var(--text2); text-transform: uppercase; letter-spacing: .5px;
+  border-bottom: 1px solid var(--border); background: rgba(0,0,0,.2);
+}
+td {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  font-size: 13px; vertical-align: middle;
+}
+tr:last-child td { border-bottom: none; }
+tr:hover { background: rgba(99,102,241,.04); }
+
+/* Status Badges */
+.badge {
+  display: inline-block; padding: 2px 8px; border-radius: 9999px;
+  font-size: 11px; font-weight: 600;
+}
+.badge-active { background: rgba(34,197,94,.15); color: var(--green); }
+.badge-disabled { background: rgba(156,163,175,.15); color: var(--text2); }
+.badge-failed { background: rgba(239,68,68,.15); color: var(--red); }
+
+/* Modal */
+.modal-overlay {
+  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
+  z-index: 1000; align-items: center; justify-content: center;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 12px; padding: 24px; width: 90%; max-width: 600px;
+  max-height: 80vh; overflow-y: auto;
+}
+.modal h2 { font-size: 18px; margin-bottom: 16px; }
+.modal label {
+  display: block; font-size: 12px; color: var(--text2);
+  margin-bottom: 4px; margin-top: 12px;
+}
+.modal input, .modal textarea {
+  width: 100%; padding: 10px 12px; background: var(--bg);
+  border: 1px solid var(--border); border-radius: 6px;
+  color: var(--text); font-size: 13px; font-family: monospace;
+}
+.modal textarea { min-height: 160px; resize: vertical; }
+.modal input:focus, .modal textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+.modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+
+/* Toast */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
+  border-radius: 8px; font-size: 13px; z-index: 2000;
+  animation: slideIn .3s ease;
+}
+.toast.success { background: var(--green); color: #fff; }
+.toast.error { background: var(--red); color: #fff; }
+.toast.info { background: var(--accent); color: #fff; }
+@keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+
+/* Test result inline */
+.test-result {
+  font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 4px;
+}
+.test-ok { background: rgba(34,197,94,.15); color: var(--green); }
+.test-fail { background: rgba(239,68,68,.15); color: var(--red); }
+
+/* Empty state */
+.empty {
+  text-align: center; padding: 48px 16px; color: var(--text2);
+}
+.empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+/* Responsive */
+@media (max-width: 768px) {
+  .container { padding: 12px; }
+  .header h1 { font-size: 18px; }
+  th, td { padding: 8px 10px; font-size: 12px; }
+  .stats-bar { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+</head>
+<body>
+<div class="container">
+  <!-- Header -->
+  <div class="header">
+    <h1>🚀 <span>rita2api</span> 管理面板</h1>
+    <div class="header-actions">
+      <button class="btn btn-primary" onclick="showAddModal()">➕ 添加账号</button>
+      <button class="btn btn-outline" onclick="showBatchModal()">📦 批量导入</button>
+      <button class="btn btn-outline" onclick="testAll()">🧪 全部测试</button>
+      <button class="btn btn-outline" onclick="resetAll()">🔄 重置故障</button>
+      <button class="btn btn-outline" onclick="refresh()">🔃 刷新</button>
+    </div>
+  </div>
+
+  <!-- Stats -->
+  <div class="stats-bar" id="statsBar">
+    <div class="stat-card blue"><div class="num" id="statTotal">-</div><div class="label">总账号</div></div>
+    <div class="stat-card green"><div class="num" id="statActive">-</div><div class="label">活跃</div></div>
+    <div class="stat-card yellow"><div class="num" id="statDisabled">-</div><div class="label">已禁用</div></div>
+    <div class="stat-card red"><div class="num" id="statFailed">-</div><div class="label">故障中</div></div>
+  </div>
+
+  <!-- Account Table -->
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>名称</th>
+          <th>Token</th>
+          <th>VisitorID</th>
+          <th>状态</th>
+          <th>请求</th>
+          <th>成功率</th>
+          <th>最后错误</th>
+          <th>操作</th>
+        </tr>
+      </thead>
+      <tbody id="accountTable">
+        <tr><td colspan="8" class="empty"><div class="icon">📭</div>加载中...</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Add Account Modal -->
+<div class="modal-overlay" id="addModal">
+  <div class="modal">
+    <h2>➕ 添加账号</h2>
+    <label>名称（可选）</label>
+    <input type="text" id="addName" placeholder="my-account-1">
+    <label>Token *</label>
+    <input type="text" id="addToken" placeholder="JqS9UgxBuWtfYd6WXdr5F7TuG2CWxXtH">
+    <label>VisitorID（可选）</label>
+    <input type="text" id="addVisitorId" placeholder="3373cae46fb3a053670e82603a234fc9:2d7a2c...">
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('addModal')">取消</button>
+      <button class="btn btn-primary" onclick="addAccount()">添加</button>
+    </div>
+  </div>
+</div>
+
+<!-- Batch Import Modal -->
+<div class="modal-overlay" id="batchModal">
+  <div class="modal">
+    <h2>📦 批量导入账号</h2>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">
+      支持两种格式，每行一个账号：
+    </p>
+    <div style="font-size:12px;color:var(--text2);background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-family:monospace">
+      格式1（JSON 数组）：<br>
+      [{"token":"abc","visitorid":"xyz","name":"账号1"}, ...]<br><br>
+      格式2（每行一个，逗号分隔）：<br>
+      token1,visitorid1,名称1<br>
+      token2,visitorid2,名称2<br>
+      token3,,名称3（无 visitorid）<br>
+      token4（仅 token）
+    </div>
+    <label>账号数据</label>
+    <textarea id="batchData" placeholder='粘贴 JSON 数组或每行一个 "token,visitorid,name"'></textarea>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('batchModal')">取消</button>
+      <button class="btn btn-primary" onclick="batchImport()">导入</button>
+    </div>
+  </div>
+</div>
+
+<!-- Edit Account Modal -->
+<div class="modal-overlay" id="editModal">
+  <div class="modal">
+    <h2>✏️ 编辑账号</h2>
+    <input type="hidden" id="editId">
+    <label>名称</label>
+    <input type="text" id="editName">
+    <label>Token</label>
+    <input type="text" id="editToken">
+    <label>VisitorID</label>
+    <input type="text" id="editVisitorId">
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('editModal')">取消</button>
+      <button class="btn btn-primary" onclick="saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';  // same origin
+
+function toast(msg, type='info') {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3000);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {'Content-Type': 'application/json'} };
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+// ===================== Data Loading =====================
+async function refresh() {
+  const [accounts, summary] = await Promise.all([
+    api('GET', '/api/accounts'),
+    api('GET', '/api/accounts/summary'),
+  ]);
+  renderStats(summary);
+  renderTable(accounts.accounts || []);
+}
+
+function renderStats(s) {
+  document.getElementById('statTotal').textContent = s.total ?? 0;
+  document.getElementById('statActive').textContent = s.active ?? 0;
+  document.getElementById('statDisabled').textContent = s.disabled ?? 0;
+  document.getElementById('statFailed').textContent = s.failed ?? 0;
+}
+
+function renderTable(accounts) {
+  const tbody = document.getElementById('accountTable');
+  if (!accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账号，点击「添加账号」或「批量导入」</td></tr>';
+    return;
+  }
+  tbody.innerHTML = accounts.map(a => {
+    const statusBadge = !a.enabled
+      ? '<span class="badge badge-disabled">已禁用</span>'
+      : a.active
+        ? '<span class="badge badge-active">活跃</span>'
+        : `<span class="badge badge-failed">故障(${a.failures})</span>`;
+    const rate = a.total_requests > 0
+      ? Math.round(a.total_success / a.total_requests * 100) + '%'
+      : '-';
+    const lastErr = a.last_error
+      ? `<span title="${esc(a.last_error)}">${esc(a.last_error.substring(0, 30))}</span>`
+      : '<span style="color:var(--text2)">-</span>';
+    return `<tr>
+      <td><strong>${esc(a.name)}</strong><br><span style="color:var(--text2);font-size:11px">${a.id}</span></td>
+      <td><code style="font-size:11px">${esc(a.token_preview)}</code></td>
+      <td><code style="font-size:11px">${esc(a.visitorid_preview || '-')}</code></td>
+      <td>${statusBadge}<span id="test-${a.id}"></span></td>
+      <td>${a.total_requests}</td>
+      <td>${rate}</td>
+      <td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${lastErr}</td>
+      <td style="white-space:nowrap">
+        <button class="btn btn-sm btn-outline" onclick="testOne('${a.id}')" title="测试">🧪</button>
+        <button class="btn btn-sm btn-outline" onclick="toggleAccount('${a.id}')" title="${a.enabled ? '禁用' : '启用'}">${a.enabled ? '⏸' : '▶'}</button>
+        <button class="btn btn-sm btn-outline" onclick="showEditModal('${a.id}','${esc(a.name)}','${esc(a.token_preview)}','${esc(a.visitorid_preview)}')" title="编辑">✏️</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}','${esc(a.name)}')" title="删除">🗑</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// ===================== Account Operations =====================
+function showAddModal() { document.getElementById('addModal').classList.add('show'); document.getElementById('addToken').focus(); }
+function showBatchModal() { document.getElementById('batchModal').classList.add('show'); document.getElementById('batchData').focus(); }
+function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+async function addAccount() {
+  const token = document.getElementById('addToken').value.trim();
+  if (!token) { toast('Token 不能为空', 'error'); return; }
+  const data = {
+    token,
+    visitorid: document.getElementById('addVisitorId').value.trim(),
+    name: document.getElementById('addName').value.trim(),
+  };
+  await api('POST', '/api/accounts', data);
+  closeModal('addModal');
+  document.getElementById('addToken').value = '';
+  document.getElementById('addVisitorId').value = '';
+  document.getElementById('addName').value = '';
+  toast('账号已添加', 'success');
+  refresh();
+}
+
+async function batchImport() {
+  const raw = document.getElementById('batchData').value.trim();
+  if (!raw) { toast('请输入数据', 'error'); return; }
+
+  let accounts;
+  try {
+    // Try JSON first
+    accounts = JSON.parse(raw);
+    if (!Array.isArray(accounts)) throw new Error('not array');
+  } catch {
+    // Parse line-by-line CSV format: token,visitorid,name
+    accounts = raw.split('\n').filter(l => l.trim()).map(line => {
+      const parts = line.split(',').map(s => s.trim());
+      return { token: parts[0] || '', visitorid: parts[1] || '', name: parts[2] || '' };
+    });
+  }
+
+  accounts = accounts.filter(a => a.token);
+  if (!accounts.length) { toast('未解析到有效账号', 'error'); return; }
+
+  const res = await api('POST', '/api/accounts/batch', { accounts });
+  closeModal('batchModal');
+  document.getElementById('batchData').value = '';
+  toast(`成功导入 ${res.added || 0} 个账号`, 'success');
+  refresh();
+}
+
+async function deleteAccount(id, name) {
+  if (!confirm(`确定删除账号「${name}」？`)) return;
+  await api('DELETE', `/api/accounts/${id}`);
+  toast('账号已删除', 'success');
+  refresh();
+}
+
+async function toggleAccount(id) {
+  await api('POST', `/api/accounts/${id}/toggle`);
+  refresh();
+}
+
+function showEditModal(id, name, tokenPreview, vidPreview) {
+  document.getElementById('editId').value = id;
+  document.getElementById('editName').value = name;
+  document.getElementById('editToken').value = '';
+  document.getElementById('editToken').placeholder = tokenPreview + '（留空不修改）';
+  document.getElementById('editVisitorId').value = '';
+  document.getElementById('editVisitorId').placeholder = vidPreview + '（留空不修改）';
+  document.getElementById('editModal').classList.add('show');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('editId').value;
+  const fields = {};
+  const name = document.getElementById('editName').value.trim();
+  const token = document.getElementById('editToken').value.trim();
+  const vid = document.getElementById('editVisitorId').value.trim();
+  if (name) fields.name = name;
+  if (token) fields.token = token;
+  if (vid) fields.visitorid = vid;
+  await api('PUT', `/api/accounts/${id}`, fields);
+  closeModal('editModal');
+  toast('账号已更新', 'success');
+  refresh();
+}
+
+// ===================== Testing =====================
+async function testOne(id) {
+  const el = document.getElementById(`test-${id}`);
+  el.innerHTML = '<span class="test-result" style="background:rgba(99,102,241,.15);color:var(--accent)">测试中...</span>';
+  const res = await api('POST', `/api/accounts/${id}/test`);
+  if (res.ok) {
+    el.innerHTML = `<span class="test-result test-ok">✓ ${res.latency_ms}ms ${res.models}模型</span>`;
+  } else {
+    el.innerHTML = `<span class="test-result test-fail">✗ ${res.error || res.message || '失败'}</span>`;
+  }
+}
+
+async function testAll() {
+  toast('开始测试所有账号...', 'info');
+  const res = await api('POST', '/api/accounts/test-all');
+  const results = res.results || {};
+  for (const [id, r] of Object.entries(results)) {
+    const el = document.getElementById(`test-${id}`);
+    if (!el) continue;
+    if (r.ok) {
+      el.innerHTML = `<span class="test-result test-ok">✓ ${r.latency_ms}ms</span>`;
+    } else {
+      el.innerHTML = `<span class="test-result test-fail">✗</span>`;
+    }
+  }
+  toast(`测试完成: ${res.ok_count}/${res.total} 通过`, res.ok_count === res.total ? 'success' : 'error');
+}
+
+async function resetAll() {
+  await api('POST', '/api/accounts/reset');
+  toast('已重置所有故障计数', 'success');
+  refresh();
+}
+
+// ===================== Init =====================
+document.querySelectorAll('.modal-overlay').forEach(el => {
+  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('show'); });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.show').forEach(m => m.classList.remove('show'));
+});
+
+refresh();
+setInterval(refresh, 30000);  // auto-refresh every 30s
+</script>
+</body>
+</html>
