@@ -1,136 +1,16 @@
 # rita2api
 
-A lightweight Flask reverse proxy that bridges the **OpenAI Chat Completions API** to [rita.ai](https://www.rita.ai)'s chat API — with streaming SSE, multi-account rotation, and tool calling support.
+OpenAI 兼容的 [Rita.ai](https://www.rita.ai) 反向代理，支持多账号轮换、自动注册补号、WebUI 管理面板。
 
-## Features
+## 功能
 
-- **OpenAI-compatible** — `/v1/chat/completions` works with standard OpenAI clients
-- **Multi-account rotation** — round-robin + auto-failover across multiple Rita accounts
-- **Streaming SSE** — full Server-Sent Events support with OpenAI chunk format
-- **Tool calling** — prompt injection for function-calling models; AI tools API
-- **Model catalog** — exposes Rita's model list via `/v1/models`
-- **Conversation continuity** — `chat_id` + `parent` message threading per account
-
-## Quick Start
-
-```bash
-git clone <repo>
-cd rita2api
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your Rita tokens
-python server.py
-```
-
-## Configuration
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RITA_TOKENS` | *(required)* | Comma-separated session tokens: `token1,token2,token3` |
-| `RITA_VISITOR_IDS` | *(required)* | Comma-separated visitor IDs, same count as tokens |
-| `RITA_UPSTREAM` | `https://api_v2.rita.ai` | Upstream API base URL |
-| `RITA_ORIGIN` | `https://www.rita.ai` | Origin header |
-| `HOST` | `0.0.0.0` | Listen address |
-| `PORT` | `10089` | Listen port |
-| `DEBUG` | `1` | Enable debug logging (`0` to disable) |
-
-### Multi-Account Setup
-
-```bash
-# Account 1
-RITA_TOKENS=token_abc123,token_def456,token_ghi789
-RITA_VISITOR_IDS=vid_abc:xxx,vid_def:yyy,vid_ghi:zzz
-```
-
-- **Round-robin**: each request uses the next account in sequence
-- **Auto-failover**: if an account fails 3 consecutive requests, it's temporarily skipped
-- **Auto-recovery**: successful request resets failure counter
-- **Client headers**: clients can pass their own `token`/`visitorid` in headers to bypass rotation
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions (streaming + sync) |
-| `POST` | `/v1/chat/completions/streaming` | Explicit streaming with tool support |
-| `GET` | `/v1/models` | List available models from Rita catalog |
-| `POST` | `/v1/conversations` | List conversation history |
-| `POST` | `/v1/chat/init` | Start a new conversation |
-| `POST` | `/v1/chat/title` | Get auto-generated conversation title |
-| `GET` | `/v1/tools` | List available AI tools (image/video) |
-| `POST` | `/v1/tools/execute` | Execute an AI tool |
-| `GET` | `/health` | Health check |
-| `GET` | `/debug/state` | Show account/conversation state |
-| `POST` | `/debug/clear` | Clear conversation state |
-
-## Architecture
-
-```
-Client (OpenAI API)
-        │
-        ▼
-   rita2api proxy (Flask, port 10089)
-        │  • multi-account rotation
-        │  • message format translation
-        │  • tool prompt injection
-        │  • SSE translation
-        ▼
-  rita.ai API (api_v2.rita.ai)
-  /aichat/completions
-```
-
-## Tool Calling
-
-rita2api supports two tool paradigms:
-
-### 1. Function Calling (via prompt injection)
-When `tools` are passed in the request, rita2api injects compact tool descriptions
-into the user message. The model responds with JSON tool calls, which are converted
-to OpenAI `tool_calls` format.
-
-```bash
-curl http://localhost:10089/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "What is the weather in Tokyo?"}],
-    "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}}],
-    "stream": false
-  }'
-```
-
-### 2. AI Tools (rita native)
-rita.ai provides built-in AI tools (image enhancement, background removal, video generation, etc.).
-List available tools and execute them:
-
-```bash
-# List tools
-curl http://localhost:10089/v1/tools
-
-# Execute a tool
-curl http://localhost:10089/v1/tools/execute \
-  -H "Content-Type: application/json" \
-  -d '{"tool_id": 1, "action": "edit_prompt", "prompt": "enhance this image"}'
-```
-
-## License
-
-CC BY-NC-SA 4.0
-
----
-
-# rita2api（中文文档）
-
-将 **OpenAI Chat Completions API** 转接到 [rita.ai](https://www.rita.ai) 聊天 API 的轻量级 Flask 反向代理，支持流式 SSE、多账号轮换和工具调用。
-
-## 功能特性
-
-- **OpenAI 兼容** — `/v1/chat/completions` 可直接对接标准 OpenAI 客户端
-- **多账号轮换** — Round-robin 轮询 + 自动故障转移，支持多个 Rita 账号
-- **流式 SSE** — 完整的 Server-Sent Events 支持，输出 OpenAI chunk 格式
-- **工具调用** — 支持 Function Calling（prompt 注入方案）和 Rita 原生 AI 工具
-- **模型目录** — 通过 `/v1/models` 暴露 Rita 全部模型列表
-- **对话连续性** — 基于 `chat_id` + `parent` 的消息线程，按账号隔离
+- **OpenAI 兼容** `/v1/chat/completions` 直接对接 OpenAI 客户端（流式 + 非流式）
+- **多账号轮换** Round-robin 负载均衡 + 自动故障转移 + 点数系统
+- **自动注册** 使用 YesCaptcha + GPTMail/YYDSMail 全自动注册 Rita 账号
+- **自动补号** 活跃账号低于阈值时后台自动注册补充
+- **WebUI 管理** 五页 Tab 面板：聊天广场 / 账号注册 / 账号管理 / 邮箱服务 / 配置管理
+- **数据库配置** SQLite 持久化，所有配置支持 WebUI 热更新
+- **Tool Calling** prompt 注入方式支持 function calling
 
 ## 快速开始
 
@@ -138,116 +18,188 @@ CC BY-NC-SA 4.0
 git clone <repo>
 cd rita2api
 pip install -r requirements.txt
-cp .env.example .env
-# 编辑 .env，填入你的 Rita token
 python server.py
 ```
 
-## 配置说明
+启动后访问 `http://localhost:10089` 进入管理面板。
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `RITA_TOKENS` | *（必填）* | 逗号分隔的会话 token：`token1,token2,token3` |
-| `RITA_VISITOR_IDS` | *（必填）* | 逗号分隔的访客 ID，数量与 token 一一对应 |
-| `RITA_UPSTREAM` | `https://api_v2.rita.ai` | 上游 API 基础地址 |
-| `RITA_ORIGIN` | `https://www.rita.ai` | Origin 请求头 |
-| `HOST` | `0.0.0.0` | 监听地址 |
-| `PORT` | `10089` | 监听端口 |
-| `DEBUG` | `1` | 开启调试日志（`0` 关闭） |
+### 初次使用
 
-### 多账号配置
+1. 打开 WebUI → **配置管理** Tab
+2. 设置 `AUTH_TOKEN`（管理面板密码，留空则无需登录）
+3. 打开 **账号管理** Tab → 添加账号（填入 Rita token）
+4. 或者打开 **账号注册** Tab → 配置 `YESCAPTCHA_KEY` + `GPTMAIL_API_KEY` → 点击手动注册
 
-```bash
-RITA_TOKENS=token_abc123,token_def456,token_ghi789
-RITA_VISITOR_IDS=vid_abc:xxx,vid_def:yyy,vid_ghi:zzz
+## 架构
+
+```
+客户端 (OpenAI API)
+       |
+       v
+  rita2api (Flask :10089)
+       |  - 多账号 Round-robin
+       |  - 自动创建对话 (newConversation)
+       |  - 消息格式转换 (OpenAI -> Rita)
+       |  - SSE 流转换 (Rita -> OpenAI chunk)
+       |  - token + Cookie 双头鉴权
+       v
+  Rita API (api_v2.rita.ai)
+  /aichat/completions (SSE)
 ```
 
-- **Round-robin 轮询**：每次请求依次使用下一个账号
-- **自动跳过**：某个账号连续失败 3 次后暂时跳过
-- **自动恢复**：成功一次即重置失败计数
-- **客户端覆盖**：客户端可在请求头传 `token`/`visitorid` 来跳过轮换
+### 鉴权模型
 
-## 接口列表
+Rita API 需要 `token` 同时出现在 HTTP Header 和 Cookie 中：
+
+```
+Header:  token: <gosplit_token>
+Cookie:  token=<gosplit_token>
+```
+
+对话流程：
+1. `POST /chatgpt/newConversation {"model":"model_25"}` → 获取 `chat_id`
+2. `POST /aichat/completions {"model":"model_25","messages":[...],"chat_id":xxx}` → SSE 流
+
+模型 ID 格式为 `model_xxx`（如 `model_25` = Rita, `model_69` = GPT-5.4），通过 `/v1/models` 查看完整列表。
+
+## API
+
+### 代理接口
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/v1/chat/completions` | OpenAI Chat Completions（流式 + 同步） |
-| `POST` | `/v1/chat/completions/streaming` | 显式流式 + 工具调用支持 |
-| `GET` | `/v1/models` | 获取 Rita 模型目录 |
-| `POST` | `/v1/conversations` | 获取对话历史 |
+| `POST` | `/v1/chat/completions` | OpenAI Chat Completions（流式 + 非流式） |
+| `GET` | `/v1/models` | 模型目录（来自 Rita） |
 | `POST` | `/v1/chat/init` | 创建新对话 |
-| `POST` | `/v1/chat/title` | 获取自动生成的对话标题 |
-| `GET` | `/v1/tools` | 获取可用 AI 工具（图像/视频） |
+| `GET` | `/v1/tools` | 可用 AI 工具列表 |
 | `POST` | `/v1/tools/execute` | 执行 AI 工具 |
 | `GET` | `/health` | 健康检查 |
-| `GET` | `/debug/state` | 查看账号/对话状态 |
-| `POST` | `/debug/clear` | 清除对话缓存 |
 
-## 架构说明
+### 管理接口（需 AUTH_TOKEN）
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `GET` | `/api/accounts` | 账号列表 |
+| `POST` | `/api/accounts` | 添加账号 |
+| `POST` | `/api/accounts/batch` | 批量导入 |
+| `POST` | `/api/accounts/batch-action` | 批量操作（启用/禁用/删除/测试/刷新） |
+| `PUT` | `/api/accounts/<id>` | 编辑账号 |
+| `DELETE` | `/api/accounts/<id>` | 删除账号 |
+| `POST` | `/api/accounts/<id>/toggle` | 启用/禁用 |
+| `POST` | `/api/accounts/<id>/test` | 测试连通性 |
+| `POST` | `/api/accounts/<id>/refresh` | 重新登录刷新 Token |
+| `POST` | `/api/accounts/<id>/ticket` | 获取 Ticket |
+| `POST` | `/api/accounts/reset` | 重置所有故障计数 |
+| `POST` | `/api/accounts/purge-invalid` | 清除无效账号 |
+| `GET/PUT` | `/api/config` | 读取/修改系统配置 |
+| `POST` | `/api/auto-register` | 手动触发注册 |
+| `GET` | `/api/auto-register/config` | 注册配置状态 |
+| `POST` | `/api/health-check/run` | 运行健康检查 |
+| `GET` | `/api/mail/status` | 邮件服务状态 |
+| `POST` | `/api/mail/check-code` | 查询验证码 |
+| `GET` | `/api/accounts/emails` | 有邮箱的账号列表 |
+
+## 配置
+
+所有配置存储在 SQLite 数据库（`data/rita.db`），可通过 WebUI **配置管理** 页面实时修改。
+
+首次启动会自动创建默认值，也可通过 `.env` 文件或环境变量覆盖。
+
+### 核心配置
+
+| Key | 默认值 | 说明 |
+|-----|--------|------|
+| `RITA_UPSTREAM` | `https://api_v2.rita.ai` | 上游 API 地址 |
+| `RITA_ORIGIN` | `https://www.rita.ai` | 请求 Origin 头 |
+| `AUTH_TOKEN` | *(空)* | 管理面板密码，留空则无需登录 |
+| `DISABLE_SSL_VERIFY` | `1` | 跳过上游 SSL 验证 |
+| `HOST` | `0.0.0.0` | 监听地址 |
+| `PORT` | `10089` | 监听端口 |
+
+### 自动注册配置
+
+| Key | 默认值 | 说明 |
+|-----|--------|------|
+| `AUTO_REGISTER_ENABLED` | `0` | 启用后台自动补号 |
+| `AUTO_REGISTER_MIN_ACTIVE` | `2` | 活跃账号低于此值时触发补号 |
+| `AUTO_REGISTER_BATCH` | `1` | 每次补号注册数量 |
+| `AUTO_REGISTER_PASSWORD` | `@qazwsx123456` | 注册时设置的默认密码 |
+| `YESCAPTCHA_KEY` | *(空)* | YesCaptcha API Key |
+| `GPTMAIL_API_KEY` | *(空)* | GPTMail API Key |
+| `GPTMAIL_API_BASE` | `https://mail.chatgpt.org.uk` | GPTMail API 地址 |
+| `YYDSMAIL_API_KEY` | *(空)* | YYDSMail API Key |
+| `YYDSMAIL_API_BASE` | `https://maliapi.215.im/v1` | YYDSMail API 地址 |
+
+### 注册流程
 
 ```
-客户端（OpenAI API）
-        │
-        ▼
-   rita2api 代理（Flask，端口 10089）
-        │  • 多账号轮换
-        │  • 消息格式转换
-        │  • 工具 prompt 注入
-        │  • SSE 格式转换
-        ▼
-  rita.ai API（api_v2.rita.ai）
-  /aichat/completions
+1. GPTMail 创建临时邮箱
+2. gosplit authenticate (初始化会话)
+3. gosplit sign_process (提交邮箱 + agree)
+4. YesCaptcha 解决 reCAPTCHA v2 (最多重试 4 次)
+5. gosplit sign_process (提交 captcha, 含 email+agree)
+6. gosplit emailCode (显式触发验证码发送)
+7. 轮询邮箱获取验证码 (90s 超时, 最多重发 2 次)
+8. gosplit code_sign (提交验证码, 失败自动重发重试)
+9. gosplit authenticate (获取 token + ticket)
+10. gosplit silent_edit (设置密码)
 ```
 
-## 工具调用
+## 点数系统
 
-rita2api 支持两种工具调用模式：
+每个账号初始 100 点，不同模型消耗不同点数：
 
-### 1. Function Calling（prompt 注入方案）
-请求中传入 `tools` 后，rita2api 将紧凑的工具描述注入用户消息。模型以 JSON 格式返回工具调用，代理自动转为 OpenAI `tool_calls` 格式。
+| 等级 | 点数 | 模型示例 |
+|------|------|----------|
+| Basic | 0 | Rita (model_25) |
+| Standard | 1-2 | Rita-Pro, GPT-4.1-mini, Gemini-3-Flash |
+| Premium | 5 | GPT-5.4, Gemini-3.1-Pro, GPT-4.1 |
+| Ultra | 10 | Gemini-3.1-Pro-Thinking |
+
+## WebUI 管理面板
+
+五个功能 Tab：
+
+- **聊天广场** 选择模型直接对话，支持模型目录浏览
+- **账号注册** 查看注册配置状态，手动触发注册，实时日志
+- **账号管理** 账号列表（以邮箱为主键），批量操作（全选/勾选 → 批量测试/启用/禁用/刷新/删除），点数显示
+- **邮箱服务** GPTMail/YYDSMail 状态，从已注册账号选择邮箱查询验证码
+- **配置管理** 按语义分组的 inline 编辑，布尔值用 Toggle 开关，敏感值显示/隐藏，实时搜索
+
+## 项目结构
+
+```
+rita2api/
+  server.py          # Flask 主服务：路由、代理、API
+  accounts.py        # 账号管理器：CRUD、轮换、健康检查
+  auto_register.py   # 自动注册：完整注册流程、Token 刷新
+  database.py        # SQLite 数据层：账号、配置、用量日志
+  quota.py           # 模型点数计费
+  migrate.py         # JSON → SQLite 数据迁移
+  templates/
+    index.html       # WebUI 单页面（5 Tab）
+  data/
+    rita.db           # SQLite 数据库（自动创建）
+  register/          # 独立批量注册工具（参考实现）
+```
+
+## 使用示例
 
 ```bash
+# 非流式对话
 curl http://localhost:10089/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{
-    "model": "gpt-4o",
-    "messages": [{"role": "user", "content": "东京今天天气怎么样？"}],
-    "tools": [{"type": "function", "function": {"name": "get_weather", "parameters": {"type": "object", "properties": {"city": {"type": "string"}}}}}],
-    "stream": false
-  }'
-```
+  -d '{"model":"model_25","messages":[{"role":"user","content":"你好"}]}'
 
-### 2. AI 工具（Rita 原生）
-rita.ai 提供内置 AI 工具（图像增强、背景移除、视频生成等），可直接列出和执行：
-
-```bash
-# 列出工具
-curl http://localhost:10089/v1/tools
-
-# 执行工具
-curl http://localhost:10089/v1/tools/execute \
+# 流式对话
+curl http://localhost:10089/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"tool_id": 1, "action": "edit_prompt", "prompt": "增强这张图片"}'
+  -d '{"model":"model_25","messages":[{"role":"user","content":"你好"}],"stream":true}'
+
+# 查看模型列表
+curl http://localhost:10089/v1/models
 ```
 
-### 多账号轮换机制
-
-```
-请求 1 → 账号 A ✓
-请求 2 → 账号 B ✓
-请求 3 → 账号 C ✗ (失败 1 次)
-请求 4 → 账号 A ✓
-请求 5 → 账号 B ✓
-请求 6 → 账号 C ✗ (失败 2 次)
-请求 7 → 账号 A ✓
-请求 8 → 账号 B ✓
-请求 9 → 账号 C ✗ (失败 3 次，达到阈值)
-请求 10 → 账号 A ✓  ← 自动跳过 C
-请求 11 → 账号 B ✓  ← 自动跳过 C
-...
-全部账号超限 → 重置计数，从头开始
-```
-
-## 许可证
+## License
 
 CC BY-NC-SA 4.0

@@ -154,28 +154,36 @@ def build_rita_messages(messages: list) -> list:
 
 # ===================== Model Resolution =====================
 def resolve_rita_model(model: str) -> str:
+    """Resolve client model name to Rita's model_xxx format.
+    If already in model_xxx format, pass through directly.
+    Otherwise, try to match known aliases.
+    """
+    # Already in Rita format
+    if model.startswith("model_"):
+        return model
+
     model_lower = model.lower()
+    # Static alias mappings (will be supplemented by dynamic catalog)
     mappings = {
         "rita": "model_25",
-        "gpt-4o": "gpt-4o", "gpt-4o-mini": "gpt-4o-mini",
-        "gpt-4-turbo": "gpt-4-turbo", "gpt-4": "gpt-4",
-        "gpt-3.5-turbo": "gpt-3.5-turbo", "chatgpt-4o-latest": "chatgpt-4o-latest",
-        "claude-sonnet-4-6": "claude-4.6", "claude-opus-4-6": "claude-opus-4-6",
-        "claude-4.6": "claude-4.6", "claude-haiku-4-5": "claude-4.5-haiku",
-        "claude-3.5-sonnet": "claude-3.5-sonnet", "claude-3.5-haiku": "claude-3.5-haiku",
-        "gemini-2.0-flash": "gemini-2.0-flash", "gemini-2.5-pro": "gemini-2.5-pro",
-        "gemini-2.5-flash": "gemini-2.5-flash", "gemini-1.5-flash": "gemini-1.5-flash",
-        "gemini-1.5-pro": "gemini-1.5-pro",
-        "o1-preview": "reasoning-preview", "o1-mini": "reasoning-mini", "o1": "reasoning",
-        "grok-3": "grok-3", "grok-2": "grok-2",
-        "mistral-large": "mistral-large", "mixtral-8x7b": "mixtral-8x7b",
-        "deepseek-v3": "deepseek-v3", "deepseek-r1": "deepseek-r1",
+        "rita-pro": "model_37",
     }
     if model_lower in mappings:
         return mappings[model_lower]
     for key, value in mappings.items():
         if model_lower.startswith(key):
             return value
+
+    # Dynamic mapping: try to find from cached model catalog
+    if _models_cache:
+        for m in _models_cache.get("data", []):
+            mid = m.get("id", "")
+            mname = m.get("name", "").lower()
+            # Match by name (e.g., "GPT-4o" -> "model_xx")
+            if model_lower == mname or model_lower in mname or mname.startswith(model_lower):
+                return mid
+
+    # Fallback: return as-is (let upstream handle it)
     return model
 
 # ===================== Tool Calling =====================
@@ -452,6 +460,74 @@ def api_reset_failures():
     log(f"🔄 Reset failures for {count} accounts", "INFO")
     return jsonify({"ok": True, "reset": count})
 
+@app.route("/api/accounts/batch-action", methods=["POST"])
+def api_batch_action():
+    """Batch operations on selected accounts.
+    Body: { "ids": ["id1","id2",...], "action": "enable|disable|delete|test|refresh" }
+    Or: { "all": true, "action": "enable|disable|delete|test|refresh" }
+    """
+    data = request.json or {}
+    action = data.get("action", "").strip()
+    use_all = data.get("all", False)
+
+    if use_all:
+        ids = [a["id"] for a in acm.list_all()]
+    else:
+        ids = data.get("ids", [])
+
+    if not ids:
+        return jsonify({"error": "no accounts specified"}), 400
+    if action not in ("enable", "disable", "delete", "test", "refresh"):
+        return jsonify({"error": f"unknown action: {action}"}), 400
+
+    results = {"action": action, "total": len(ids), "success": 0, "failed": 0, "details": {}}
+
+    for aid in ids:
+        try:
+            if action == "enable":
+                acm.reactivate_account(aid)
+                results["success"] += 1
+            elif action == "disable":
+                acc = acm.get(aid)
+                if acc and acc.enabled:
+                    acm.toggle(aid)
+                results["success"] += 1
+            elif action == "delete":
+                if acm.delete(aid):
+                    results["success"] += 1
+                else:
+                    results["failed"] += 1
+            elif action == "test":
+                r = acm.test_account(aid, UPSTREAM_URL, RITA_ORIGIN)
+                results["details"][aid] = r
+                if r.get("ok"):
+                    results["success"] += 1
+                else:
+                    results["failed"] += 1
+            elif action == "refresh":
+                acc = acm.get(aid)
+                if not acc or not acc.email:
+                    results["details"][aid] = {"ok": False, "error": "no email"}
+                    results["failed"] += 1
+                    continue
+                try:
+                    result = auto_register.refresh_account_token(
+                        email=acc.email, password=acc.password,
+                        mail_provider=acc.mail_provider, mail_api_key=acc.mail_api_key,
+                    )
+                    acm.reactivate_account(aid, new_token=result["token"])
+                    results["details"][aid] = {"ok": True}
+                    results["success"] += 1
+                except Exception as e:
+                    results["details"][aid] = {"ok": False, "error": str(e)}
+                    results["failed"] += 1
+        except Exception as e:
+            results["details"][aid] = {"ok": False, "error": str(e)}
+            results["failed"] += 1
+
+    log(f"📦 Batch {action}: {results['success']}/{results['total']} success", "INFO")
+    return jsonify({"ok": True, **results})
+
 @app.route("/api/accounts/clear", methods=["DELETE"])
 def api_clear_all():
     count = acm.delete_all()
@@ -521,14 +597,29 @@ def api_run_health_check():
 def api_check_mail_code():
     """Query the latest verification code for an email address.
     Body: { "email": "...", "mail_provider": "gptmail", "mail_api_key": "..." }
+    Or:   { "account_id": "abc123" }  — looks up email/provider from account
     """
     data = request.json or {}
+    account_id = data.get("account_id", "").strip()
     email = data.get("email", "").strip()
-    if not email:
-        return jsonify({"error": "email is required"}), 400
-
-    mail_provider = data.get("mail_provider", "gptmail").strip()
+    mail_provider = data.get("mail_provider", "").strip()
     mail_api_key = data.get("mail_api_key", "").strip()
+
+    # If account_id is given, look up the account's email and provider
+    if account_id and not email:
+        acc = acm.get(account_id)
+        if not acc:
+            return jsonify({"ok": False, "error": "account not found"}), 404
+        if not acc.email:
+            return jsonify({"ok": False, "error": "account has no email set"}), 400
+        email = acc.email
+        mail_provider = mail_provider or acc.mail_provider or "gptmail"
+        mail_api_key = mail_api_key or acc.mail_api_key or ""
+
+    if not email:
+        return jsonify({"error": "email or account_id is required"}), 400
+
+    mail_provider = mail_provider or "gptmail"
 
     try:
         code = auto_register.wait_for_code_by_provider(
@@ -543,6 +634,17 @@ def api_check_mail_code():
             return jsonify({"ok": False, "message": "No verification code found", "email": email})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/accounts/emails", methods=["GET"])
+def api_list_account_emails():
+    """Return a list of accounts that have emails configured (for mail code lookup)."""
+    accounts = acm.list_all()
+    result = [
+        {"id": a["id"], "name": a["name"], "email": a["email"],
+         "mail_provider": a.get("mail_provider", "")}
+        for a in accounts if a.get("email")
+    ]
+    return jsonify({"accounts": result})
 
 
 @app.route("/api/mail/status", methods=["GET"])
@@ -825,14 +927,16 @@ def list_conversations():
 
 @app.route("/v1/chat/init", methods=["POST"])
 def new_conversation():
+    data = request.json or {}
     acc, _ = acm.next()
     if not acc:
         return jsonify({"error": "no accounts configured"}), 500
     try:
+        model = data.get("model", "model_25")
         r = requests.post(
             f"{UPSTREAM_URL}/chatgpt/newConversation",
             headers=acm.upstream_headers(acc, RITA_ORIGIN),
-            json={}, timeout=15,
+            json={"model": resolve_rita_model(model)}, timeout=15,
             verify=not DISABLE_SSL_VERIFY,
         )
         r.raise_for_status()
@@ -901,9 +1005,36 @@ def chat_completions():
             rita_messages[-1]["text"] = inject_tool_prompt(last_text, client_tools)
             log(f"🔧 tool prompt injected ({len(client_tools)} tools)", "DEBUG")
 
+        # Build headers: prefer client-provided auth, otherwise use rotated account
+        if client_token:
+            hdrs = {
+                "Content-Type": "application/json",
+                "Origin": RITA_ORIGIN, "Referer": RITA_ORIGIN,
+                "token": client_token,
+                "Cookie": f"token={client_token}",
+            }
+            if client_visitorid:
+                hdrs["visitorid"] = client_visitorid
+        else:
+            hdrs = acm.upstream_headers(acc, RITA_ORIGIN)
+
+        # Auto-create conversation if needed (Rita requires valid chat_id)
+        if not chat_id:
+            try:
+                init_r = requests.post(
+                    f"{UPSTREAM_URL}/chatgpt/newConversation",
+                    headers=hdrs, json={"model": rita_model},
+                    timeout=15, verify=not DISABLE_SSL_VERIFY,
+                )
+                init_data = init_r.json()
+                if init_data.get("code") == 0:
+                    chat_id = init_data.get("data", {}).get("chat_id", 0)
+                    log(f"📝 Auto-created conversation: chat_id={chat_id}", "DEBUG")
+            except Exception as e:
+                log(f"⚠️ Failed to create conversation: {e}", "WARNING")
+
         payload = {
             "model": rita_model,
-            "language": "zh" if _detect_chinese(messages) else "en",
             "messages": rita_messages,
             "online": 0,
             "model_type_id": 0,
@@ -911,21 +1042,9 @@ def chat_completions():
             "parent": parent,
         }
 
-        # Build headers: prefer client-provided auth, otherwise use rotated account
-        if client_token:
-            hdrs = {
-                "Content-Type": "application/json",
-                "Origin": RITA_ORIGIN, "Referer": RITA_ORIGIN,
-                "token": client_token,
-            }
-            if client_visitorid:
-                hdrs["visitorid"] = client_visitorid
-        else:
-            hdrs = acm.upstream_headers(acc, RITA_ORIGIN)
-
         resp = requests.post(
             f"{UPSTREAM_URL}/aichat/completions",
-            headers=hdrs, json=payload, stream=stream, timeout=120,
+            headers=hdrs, json=payload, stream=True, timeout=120,
             verify=not DISABLE_SSL_VERIFY,
         )
 
@@ -934,6 +1053,22 @@ def chat_completions():
             if acc:
                 acm.mark_fail(acc, f"HTTP {resp.status_code}")
             return jsonify({"error": {"message": "upstream error", "type": "upstream_error"}}), 502
+
+        # Check if upstream returned a JSON error (not SSE)
+        ct = resp.headers.get("content-type", "")
+        if "application/json" in ct:
+            try:
+                err_body = resp.json()
+                err_code = err_body.get("code", 0)
+                if err_code and err_code != 0:
+                    err_msg = err_body.get("error", err_body.get("message", "upstream error"))
+                    log(f"⚠️ Upstream JSON error: code={err_code} msg={err_msg}", "WARNING")
+                    if acc:
+                        acm.mark_fail(acc, str(err_msg))
+                    return jsonify({"error": {"message": str(err_msg), "type": "upstream_error"}}), 502
+            except Exception:
+                pass
+
         resp.raise_for_status()
         if acc:
             acm.mark_ok(acc)
@@ -951,6 +1086,7 @@ def chat_completions():
                 captured_msg_id = None
 
                 with resp:
+                    resp.encoding = "utf-8"
                     for line in resp.iter_lines(decode_unicode=True):
                         if not line or not line.startswith("data: "):
                             continue
@@ -966,8 +1102,10 @@ def chat_completions():
                         if etype == "quota_remain":
                             yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": None}], "x_quota": {"quota_remain": obj.get("quota_remain"), "service_quota_remain": obj.get("service_quota_remain")}})}\n\n'
                             continue
-                        if etype == "assistant_complete":
-                            break
+                        if etype in ("assistant_complete", "conv_title"):
+                            if etype == "assistant_complete":
+                                break
+                            continue
 
                         rid = obj.get("id", "")
                         if not captured_msg_id and rid.startswith("ai"):
@@ -979,10 +1117,10 @@ def chat_completions():
                         delta = choices[0].get("delta", {})
                         content = delta.get("content", "")
                         if content:
-                            yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "created": obj.get("created", int(time.time())), "model": model, "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]})}\n\n'
+                            yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "created": obj.get("created", int(time.time())), "model": model, "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}, ensure_ascii=False)}\n\n'
 
                     if captured_msg_id:
-                        update_conversation_state(messages, captured_msg_id, 0)
+                        update_conversation_state(messages, captured_msg_id, chat_id)
 
                 yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})}\n\n'
                 yield 'data: [DONE]\n\n'
@@ -990,19 +1128,49 @@ def chat_completions():
             return Response(gen(), mimetype="text/event-stream",
                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         else:
-            # Non-streaming
-            upstream_data = resp.json()
-            content = ""
-            choices = upstream_data.get("choices", [])
-            if choices:
-                delta = choices[0].get("delta", {})
-                content = delta.get("content", "")
+            # Non-streaming: Rita always returns SSE, so we collect the full response
+            cid = f"chatcmpl-{int(time.time()*1000)}"
+            content_parts = []
+            captured_msg_id = None
+            created_ts = int(time.time())
 
-            rid = upstream_data.get("id", "")
-            captured_msg_id = rid if rid.startswith("ai") else f"msg_{int(time.time()*1000)}"
-            update_conversation_state(messages, captured_msg_id, 0)
+            with resp:
+                resp.encoding = "utf-8"
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    raw = line[6:]
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
 
-            if client_tools:
+                    etype = obj.get("type", "")
+                    if etype in ("quota_remain", "conv_title"):
+                        continue
+                    if etype == "assistant_complete":
+                        break
+
+                    rid = obj.get("id", "")
+                    if not captured_msg_id and rid.startswith("ai"):
+                        captured_msg_id = rid
+
+                    created_ts = obj.get("created", created_ts)
+
+                    choices = obj.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        c = delta.get("content", "")
+                        if c:
+                            content_parts.append(c)
+
+            content = "".join(content_parts)
+            if captured_msg_id:
+                update_conversation_state(messages, captured_msg_id, chat_id)
+
+            if client_tools and content:
                 parsed = parse_tool_response(content)
                 if parsed["type"] == "tool_calls":
                     log(f"🔧 tool_calls: {[c['name'] for c in parsed['calls']]}", "INFO")
@@ -1011,16 +1179,16 @@ def chat_completions():
                         "function": {"name": c["name"], "arguments": json.dumps(c["input"], ensure_ascii=False)},
                     } for i, c in enumerate(parsed["calls"])]
                     return jsonify({
-                        "id": f"chatcmpl-{int(time.time()*1000)}", "object": "chat.completion",
-                        "created": upstream_data.get("created", int(time.time())), "model": model,
+                        "id": cid, "object": "chat.completion",
+                        "created": created_ts, "model": model,
                         "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "tool_calls": oai_tc}, "finish_reason": "tool_calls"}],
                         "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
                     })
                 content = parsed.get("text", content)
 
             return jsonify({
-                "id": f"chatcmpl-{int(time.time()*1000)}", "object": "chat.completion",
-                "created": upstream_data.get("created", int(time.time())), "model": model,
+                "id": cid, "object": "chat.completion",
+                "created": created_ts, "model": model,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
                 "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             })

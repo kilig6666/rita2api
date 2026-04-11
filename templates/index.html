@@ -25,50 +25,61 @@ body {
   color: var(--text);
   min-height: 100vh;
 }
-.container { max-width: 1300px; margin: 0 auto; padding: 24px; }
+.container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 
 /* ==================== Login Overlay ==================== */
-.login-overlay {
-  display: none; position: fixed; inset: 0;
-  background: rgba(0,0,0,.85);
-  z-index: 9000; align-items: center; justify-content: center;
-}
+.login-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9000; align-items: center; justify-content: center; }
 .login-overlay.show { display: flex; }
-.login-card {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 16px; padding: 40px 36px; width: 90%; max-width: 380px;
-  text-align: center;
-}
+.login-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 90%; max-width: 380px; text-align: center; }
 .login-card h2 { font-size: 22px; margin-bottom: 8px; }
 .login-card p { color: var(--text2); font-size: 13px; margin-bottom: 28px; }
-.login-card input[type=password] {
-  width: 100%; padding: 11px 14px; background: var(--bg);
-  border: 1px solid var(--border); border-radius: 8px;
-  color: var(--text); font-size: 14px; margin-bottom: 14px;
-}
+.login-card input[type=password] { width: 100%; padding: 11px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; margin-bottom: 14px; }
 .login-card input[type=password]:focus { outline: none; border-color: var(--accent); }
 .login-card .btn-primary { width: 100%; padding: 11px; font-size: 15px; border-radius: 8px; }
 .login-error { color: var(--red); font-size: 12px; margin-top: 10px; min-height: 18px; }
 
-/* Header */
-.header {
-  display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 24px; flex-wrap: wrap; gap: 12px;
-}
-.header h1 { font-size: 24px; font-weight: 700; }
-.header h1 span { color: var(--accent); }
-.header-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+/* ==================== Top Bar ==================== */
+.topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; flex-wrap: wrap; gap: 12px; }
+.topbar h1 { font-size: 20px; font-weight: 700; }
+.topbar h1 span { color: var(--accent); }
+.topbar-right { display: flex; gap: 8px; align-items: center; }
 
-/* Stats Bar */
-.stats-bar {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
-  gap: 12px; margin-bottom: 24px;
+/* ==================== Tab Navigation ==================== */
+.tab-nav { display: flex; gap: 4px; margin-bottom: 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.tab-btn {
+  padding: 10px 18px; border: none; background: transparent; color: var(--text2);
+  font-size: 13px; font-weight: 500; cursor: pointer; border-radius: 8px 8px 0 0;
+  transition: all .15s; border-bottom: 2px solid transparent; margin-bottom: -1px;
+  display: flex; align-items: center; gap: 6px;
 }
-.stat-card {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; padding: 16px; text-align: center;
-}
-.stat-card .num { font-size: 26px; font-weight: 700; }
+.tab-btn:hover { color: var(--text); background: rgba(99,102,241,.08); }
+.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(99,102,241,.1); }
+.tab-btn .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); display: inline-block; }
+
+/* ==================== Tab Panels ==================== */
+.tab-panel { display: none; }
+.tab-panel.active { display: block; }
+
+/* ==================== Buttons ==================== */
+.btn { padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px; cursor: pointer; font-weight: 500; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
+.btn-primary { background: var(--accent); color: #fff; }
+.btn-primary:hover { background: var(--accent-hover); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { background: #dc2626; }
+.btn-success { background: var(--green); color: #fff; }
+.btn-success:hover { background: #16a34a; }
+.btn-warning { background: var(--orange); color: #fff; }
+.btn-warning:hover { background: #ea580c; }
+.btn-outline { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
+.btn-sm { padding: 5px 10px; font-size: 12px; }
+.btn-xs { padding: 3px 8px; font-size: 11px; }
+
+/* ==================== Stats Bar ==================== */
+.stats-bar { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
+.stat-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px; text-align: center; }
+.stat-card .num { font-size: 24px; font-weight: 700; }
 .stat-card .label { font-size: 11px; color: var(--text2); margin-top: 4px; }
 .stat-card.green .num { color: var(--green); }
 .stat-card.red .num { color: var(--red); }
@@ -77,119 +88,184 @@ body {
 .stat-card.orange .num { color: var(--orange); }
 .stat-card.purple .num { color: #a78bfa; }
 
-/* Buttons */
-.btn {
-  padding: 8px 16px; border: none; border-radius: 6px; font-size: 13px;
-  cursor: pointer; font-weight: 500; transition: all .15s;
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.btn-primary { background: var(--accent); color: #fff; }
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-danger { background: var(--red); color: #fff; }
-.btn-danger:hover { background: #dc2626; }
-.btn-outline {
-  background: transparent; border: 1px solid var(--border); color: var(--text);
-}
-.btn-outline:hover { border-color: var(--accent); color: var(--accent); }
-.btn-sm { padding: 5px 10px; font-size: 12px; }
-.btn-success { background: var(--green); color: #fff; }
-.btn-success:hover { background: #16a34a; }
-.btn-warning { background: var(--orange); color: #fff; }
-.btn-warning:hover { background: #ea580c; }
-
-/* Table */
-.table-wrap {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 10px; overflow: hidden; overflow-x: auto;
-}
-table { width: 100%; border-collapse: collapse; min-width: 860px; }
-th {
-  text-align: left; padding: 12px 14px; font-size: 11px;
-  color: var(--text2); text-transform: uppercase; letter-spacing: .5px;
-  border-bottom: 1px solid var(--border); background: rgba(0,0,0,.2);
-  white-space: nowrap;
-}
-td {
-  padding: 11px 14px; border-bottom: 1px solid var(--border);
-  font-size: 13px; vertical-align: middle;
-}
+/* ==================== Table ==================== */
+.table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; min-width: 900px; }
+th { text-align: left; padding: 11px 14px; font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,.2); white-space: nowrap; }
+td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tr:hover { background: rgba(99,102,241,.04); }
 
-/* Status Badges */
-.badge {
-  display: inline-block; padding: 2px 8px; border-radius: 9999px;
-  font-size: 11px; font-weight: 600;
-}
+/* ==================== Badges ==================== */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
 .badge-active { background: rgba(34,197,94,.15); color: var(--green); }
 .badge-disabled { background: rgba(156,163,175,.15); color: var(--text2); }
 .badge-failed { background: rgba(239,68,68,.15); color: var(--red); }
+.badge-info { background: rgba(99,102,241,.15); color: var(--accent); }
 
-/* Modal */
-.modal-overlay {
-  display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6);
-  z-index: 1000; align-items: center; justify-content: center;
-}
+/* ==================== Modal ==================== */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 1000; align-items: center; justify-content: center; }
 .modal-overlay.show { display: flex; }
-.modal {
-  background: var(--card); border: 1px solid var(--border);
-  border-radius: 12px; padding: 24px; width: 90%; max-width: 560px;
-  max-height: 88vh; overflow-y: auto;
-}
+.modal { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 90%; max-width: 560px; max-height: 88vh; overflow-y: auto; }
+.modal.wide { max-width: 800px; }
 .modal h2 { font-size: 18px; margin-bottom: 16px; }
-.modal label {
-  display: block; font-size: 12px; color: var(--text2);
-  margin-bottom: 4px; margin-top: 12px;
-}
-.modal input, .modal textarea, .modal select {
-  width: 100%; padding: 10px 12px; background: var(--bg);
-  border: 1px solid var(--border); border-radius: 6px;
-  color: var(--text); font-size: 13px; font-family: monospace;
-  appearance: none; -webkit-appearance: none;
-}
-.modal textarea { min-height: 160px; resize: vertical; font-family: monospace; }
-.modal input:focus, .modal textarea:focus, .modal select:focus {
-  outline: none; border-color: var(--accent);
-}
+.modal label { display: block; font-size: 12px; color: var(--text2); margin-bottom: 4px; margin-top: 12px; }
+.modal input, .modal textarea, .modal select { width: 100%; padding: 10px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; appearance: none; -webkit-appearance: none; }
+.modal textarea { min-height: 120px; resize: vertical; }
+.modal input:focus, .modal textarea:focus, .modal select:focus { outline: none; border-color: var(--accent); }
 .modal select option { background: var(--card); color: var(--text); }
 .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+.modal-info { font-size: 12px; color: var(--text2); background: rgba(99,102,241,.08); padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; line-height: 1.6; }
 
-/* Toast */
-.toast {
-  position: fixed; bottom: 24px; right: 24px; padding: 12px 20px;
-  border-radius: 8px; font-size: 13px; z-index: 2000;
-  animation: slideIn .3s ease; max-width: 320px;
-}
+/* ==================== Toast ==================== */
+.toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 2000; animation: slideIn .3s ease; max-width: 320px; }
 .toast.success { background: var(--green); color: #fff; }
 .toast.error { background: var(--red); color: #fff; }
 .toast.info { background: var(--accent); color: #fff; }
 @keyframes slideIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-/* Test result inline */
-.test-result {
-  font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 4px;
-}
+/* ==================== Empty State ==================== */
+.empty { text-align: center; padding: 48px 16px; color: var(--text2); }
+.empty .icon { font-size: 48px; margin-bottom: 12px; }
+
+/* ==================== Mail Pill ==================== */
+.mail-pill { display: inline-block; padding: 1px 7px; border-radius: 9999px; font-size: 10px; font-weight: 600; background: rgba(99,102,241,.15); color: var(--accent); }
+
+/* ==================== Chat Plaza ==================== */
+.chat-layout { display: grid; grid-template-columns: 280px 1fr; gap: 16px; min-height: calc(100vh - 180px); }
+.chat-sidebar { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; max-height: calc(100vh - 180px); }
+.chat-sidebar h3 { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+.model-select { width: 100%; padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; cursor: pointer; }
+.model-select:focus { outline: none; border-color: var(--accent); }
+.model-select option { background: var(--card); }
+.chat-main { background: var(--card); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
+.chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 400px; }
+.chat-msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-break: break-word; }
+.chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.chat-msg.assistant { align-self: flex-start; background: rgba(255,255,255,.06); border-bottom-left-radius: 4px; }
+.chat-msg.system { align-self: center; background: rgba(99,102,241,.1); color: var(--text2); font-size: 12px; max-width: 90%; text-align: center; }
+.chat-msg pre { white-space: pre-wrap; font-family: monospace; font-size: 12px; margin-top: 6px; }
+.chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
+.chat-input { flex: 1; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: none; min-height: 42px; max-height: 120px; font-family: inherit; }
+.chat-input:focus { outline: none; border-color: var(--accent); }
+.chat-send-btn { padding: 10px 18px; background: var(--accent); color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all .15s; white-space: nowrap; }
+.chat-send-btn:hover { background: var(--accent-hover); }
+.chat-send-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+/* ==================== Register Panel ==================== */
+.reg-config-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-bottom: 20px; }
+.reg-config-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.reg-config-card h4 { font-size: 13px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.reg-config-card .status-dot { width: 8px; height: 8px; border-radius: 50%; }
+.status-dot.green { background: var(--green); }
+.status-dot.red { background: var(--red); }
+.status-dot.yellow { background: var(--yellow); }
+.reg-config-card p { font-size: 12px; color: var(--text2); line-height: 1.5; }
+.reg-log { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-family: monospace; font-size: 12px; line-height: 1.8; max-height: 240px; overflow-y: auto; color: var(--text2); }
+.reg-log .log-ok { color: var(--green); }
+.reg-log .log-err { color: var(--red); }
+.reg-log .log-info { color: var(--accent); }
+.reg-log .log-warn { color: var(--yellow); }
+.reg-log div { border-bottom: 1px solid var(--border); padding-bottom: 4px; margin-bottom: 4px; }
+.reg-log div:last-child { border-bottom: none; }
+
+/* ==================== Config Panel ==================== */
+.config-search { display: flex; gap: 8px; margin-bottom: 16px; }
+.config-search input { flex: 1; padding: 9px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; }
+.config-search input:focus { outline: none; border-color: var(--accent); }
+.config-search input::placeholder { color: var(--text2); }
+.config-section { margin-bottom: 20px; }
+.config-section-title { font-size: 13px; font-weight: 600; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 8px; }
+.config-section-title .section-icon { font-size: 14px; }
+.config-section-title .section-count { font-size: 11px; background: rgba(99,102,241,.15); color: var(--accent); padding: 1px 6px; border-radius: 9999px; }
+.cfg-row { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 8px; transition: border-color .2s; }
+.cfg-row:hover { border-color: rgba(99,102,241,.3); }
+.cfg-row.saved { border-color: var(--green); }
+.cfg-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.cfg-key { font-size: 12px; font-family: monospace; color: var(--accent); font-weight: 600; }
+.cfg-desc { font-size: 11px; color: var(--text2); line-height: 1.4; margin-bottom: 8px; }
+.cfg-edit-row { display: flex; align-items: center; gap: 8px; }
+.cfg-input { flex: 1; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; font-family: monospace; }
+.cfg-input:focus { outline: none; border-color: var(--accent); }
+.cfg-input:disabled { opacity: .5; cursor: not-allowed; }
+.cfg-save-btn { padding: 6px 12px; background: var(--accent); color: #fff; border: none; border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; transition: all .2s; white-space: nowrap; }
+.cfg-save-btn:hover { background: var(--accent-hover); }
+.cfg-save-btn:disabled { opacity: .5; cursor: not-allowed; }
+.cfg-save-btn.saved { background: var(--green); }
+/* Toggle switch for boolean configs */
+.toggle-wrap { display: flex; align-items: center; gap: 10px; }
+.toggle { position: relative; width: 40px; height: 22px; cursor: pointer; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 22px; transition: .2s; }
+.toggle .slider::before { content: ''; position: absolute; height: 16px; width: 16px; left: 3px; bottom: 3px; background: var(--text2); border-radius: 50%; transition: .2s; }
+.toggle input:checked + .slider { background: var(--accent); }
+.toggle input:checked + .slider::before { transform: translateX(18px); background: #fff; }
+.toggle-label { font-size: 12px; color: var(--text2); }
+/* Password visibility toggle */
+.cfg-secret-wrap { flex: 1; position: relative; display: flex; align-items: center; }
+.cfg-secret-wrap input { flex: 1; padding-right: 36px; }
+.cfg-reveal-btn { position: absolute; right: 8px; background: none; border: none; color: var(--text2); cursor: pointer; font-size: 13px; padding: 2px; transition: color .15s; }
+.cfg-reveal-btn:hover { color: var(--accent); }
+
+/* ==================== Mail Panel ==================== */
+.mail-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+.mail-provider-card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.mail-provider-card h4 { font-size: 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+.mail-provider-card .desc { font-size: 12px; color: var(--text2); margin-bottom: 12px; }
+.mail-code-check { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.mail-code-check h4 { font-size: 13px; margin-bottom: 12px; }
+.mail-code-form { display: flex; gap: 8px; flex-wrap: wrap; }
+.mail-code-form input { flex: 1; min-width: 200px; padding: 9px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; }
+.mail-code-form input:focus { outline: none; border-color: var(--accent); }
+.code-result { margin-top: 10px; padding: 10px 12px; background: var(--bg); border-radius: 6px; font-size: 13px; font-family: monospace; }
+.code-result .code { font-size: 24px; font-weight: 700; color: var(--accent); letter-spacing: 4px; }
+
+/* ==================== Health Check ==================== */
+.health-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.health-result { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; font-size: 12px; font-family: monospace; }
+.health-result pre { white-space: pre-wrap; word-break: break-all; }
+
+/* ==================== Section Header ==================== */
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; gap: 12px; flex-wrap: wrap; }
+.section-header h2 { font-size: 16px; font-weight: 600; }
+.section-header h2 span { color: var(--accent); }
+
+/* ==================== Test result inline ==================== */
+.test-result { font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 4px; }
 .test-ok { background: rgba(34,197,94,.15); color: var(--green); }
 .test-fail { background: rgba(239,68,68,.15); color: var(--red); }
 
-/* Empty state */
-.empty {
-  text-align: center; padding: 48px 16px; color: var(--text2);
-}
-.empty .icon { font-size: 48px; margin-bottom: 12px; }
+/* ==================== Batch Toolbar ==================== */
+.batch-toolbar { display: none; background: var(--card); border: 1px solid var(--accent); border-radius: 8px; padding: 10px 16px; margin-bottom: 12px; align-items: center; gap: 10px; flex-wrap: wrap; animation: slideIn .2s ease; }
+.batch-toolbar.show { display: flex; }
+.batch-toolbar .batch-count { font-size: 13px; color: var(--accent); font-weight: 600; min-width: 80px; }
+.batch-toolbar .batch-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Checkbox */
+.row-cb { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
+th .row-cb { margin: 0; }
 
-/* Mail provider pill */
-.mail-pill {
-  display: inline-block; padding: 1px 7px; border-radius: 9999px;
-  font-size: 10px; font-weight: 600; background: rgba(99,102,241,.15); color: var(--accent);
-}
+/* ==================== Mail Account Selector ==================== */
+.mail-account-list { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.mail-account-list h4 { font-size: 13px; margin-bottom: 10px; color: var(--text2); }
+.mail-acct-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; max-height: 240px; overflow-y: auto; }
+.mail-acct-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; gap: 8px; cursor: pointer; transition: border-color .15s; }
+.mail-acct-item:hover { border-color: var(--accent); }
+.mail-acct-item .acct-email { font-size: 12px; color: var(--text); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mail-acct-item .acct-name { font-size: 10px; color: var(--text2); }
+.mail-acct-item .acct-prov { font-size: 10px; }
 
-/* Responsive */
+/* ==================== Responsive ==================== */
+@media (max-width: 900px) {
+  .chat-layout { grid-template-columns: 1fr; }
+  .chat-sidebar { max-height: 200px; }
+  .config-grid { grid-template-columns: 1fr; }
+}
 @media (max-width: 768px) {
   .container { padding: 12px; }
-  .header h1 { font-size: 18px; }
-  th, td { padding: 8px 10px; font-size: 12px; }
+  .topbar h1 { font-size: 16px; }
   .stats-bar { grid-template-columns: repeat(3, 1fr); }
+  .tab-nav { gap: 2px; }
+  .tab-btn { padding: 8px 12px; font-size: 12px; }
 }
 </style>
 </head>
@@ -207,48 +283,235 @@ tr:hover { background: rgba(99,102,241,.04); }
 </div>
 
 <div class="container">
-  <!-- Header -->
-  <div class="header">
+  <!-- Top Bar -->
+  <div class="topbar">
     <h1>🚀 <span>rita2api</span> 管理面板</h1>
-    <div class="header-actions">
-      <button class="btn btn-primary" onclick="showAddModal()">➕ 添加账号</button>
-      <button class="btn btn-outline" onclick="showBatchModal()">📦 批量导入</button>
-      <button class="btn btn-outline" onclick="testAll()">🧪 全部测试</button>
-      <button class="btn btn-outline" onclick="resetAll()">🔄 重置故障</button>
-      <button class="btn btn-outline" onclick="loadData()">🔃 刷新</button>
+    <div class="topbar-right">
+      <button class="btn btn-outline btn-sm" onclick="loadAllData()" title="刷新">🔃</button>
     </div>
   </div>
 
-  <!-- Stats -->
-  <div class="stats-bar" id="statsBar">
-    <div class="stat-card blue"><div class="num" id="statTotal">-</div><div class="label">总账号</div></div>
-    <div class="stat-card green"><div class="num" id="statActive">-</div><div class="label">活跃</div></div>
-    <div class="stat-card yellow"><div class="num" id="statDisabled">-</div><div class="label">已禁用</div></div>
-    <div class="stat-card red"><div class="num" id="statFailed">-</div><div class="label">故障中</div></div>
-    <div class="stat-card orange"><div class="num" id="statToday">-</div><div class="label">今日请求</div></div>
-    <div class="stat-card purple"><div class="num" id="statRequests">-</div><div class="label">总请求数</div></div>
-    <div class="stat-card blue"><div class="num" id="statUptime">-</div><div class="label">运行时间</div></div>
+  <!-- Tab Navigation -->
+  <div class="tab-nav">
+    <button class="tab-btn active" onclick="switchTab('chat')" id="tab-chat">
+      💬 <span>聊天广场</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('register')" id="tab-register">
+      ➕ <span>账号注册</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('accounts')" id="tab-accounts">
+      👥 <span>账号管理</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('mail')" id="tab-mail">
+      📧 <span>邮箱服务</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('config')" id="tab-config">
+      ⚙️ <span>配置管理</span>
+    </button>
   </div>
 
-  <!-- Account Table -->
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>名称 / ID</th>
-          <th>邮箱</th>
-          <th>Token</th>
-          <th>状态</th>
-          <th>请求</th>
-          <th>成功率</th>
-          <th>邮件服务</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody id="accountTable">
-        <tr><td colspan="8" class="empty"><div class="icon">📭</div>加载中...</td></tr>
-      </tbody>
-    </table>
+  <!-- ==================== Tab: Chat Plaza ==================== -->
+  <div class="tab-panel active" id="panel-chat">
+    <div class="chat-layout">
+      <!-- Sidebar -->
+      <div class="chat-sidebar">
+        <h3>模型选择</h3>
+        <select class="model-select" id="chatModel" onchange="onModelChange()">
+          <option value="">加载中...</option>
+        </select>
+        <h3 style="margin-top:8px">快捷操作</h3>
+        <button class="btn btn-outline btn-sm" onclick="clearChat()">🗑 清空对话</button>
+        <div style="margin-top:auto; padding-top:12px; border-top:1px solid var(--border)">
+          <div style="font-size:11px;color:var(--text2)">
+            <div>当前模型: <span id="curModelName" style="color:var(--accent)">-</span></div>
+            <div style="margin-top:4px">状态: <span id="chatStatus" style="color:var(--green)">就绪</span></div>
+          </div>
+        </div>
+      </div>
+      <!-- Chat Area -->
+      <div class="chat-main">
+        <div class="chat-messages" id="chatMessages">
+          <div class="chat-msg system">💬 欢迎使用聊天广场，选择模型后即可开始对话</div>
+        </div>
+        <div class="chat-input-area">
+          <textarea class="chat-input" id="chatInput" placeholder="输入消息... (Shift+Enter 换行, Enter 发送)" rows="1" onkeydown="onChatKeyDown(event)"></textarea>
+          <button class="chat-send-btn" id="chatSendBtn" onclick="sendMessage()">发送</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== Tab: Account Register ==================== -->
+  <div class="tab-panel" id="panel-register">
+    <div class="section-header">
+      <h2>➕ <span>自动注册</span></h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="model-select" id="regCount" style="width:auto;padding:7px 12px">
+          <option value="1">注册 1 个</option>
+          <option value="2">注册 2 个</option>
+          <option value="3">注册 3 个</option>
+          <option value="5">注册 5 个</option>
+        </select>
+        <button class="btn btn-primary" id="regBtn" onclick="triggerRegister()">🚀 手动注册</button>
+        <button class="btn btn-outline btn-sm" onclick="loadRegConfig()">🔃 刷新状态</button>
+      </div>
+    </div>
+
+    <!-- Config Status Cards -->
+    <div class="reg-config-grid" id="regConfigGrid">
+      <div class="reg-config-card">
+        <h4><span class="status-dot yellow" id="dotAutoReg"></span> 自动补号</h4>
+        <p id="descAutoReg">加载中...</p>
+      </div>
+      <div class="reg-config-card">
+        <h4><span class="status-dot yellow" id="dotCaptcha"></span> YesCaptcha</h4>
+        <p id="descCaptcha">加载中...</p>
+      </div>
+      <div class="reg-config-card">
+        <h4><span class="status-dot yellow" id="dotMail"></span> 邮件服务</h4>
+        <p id="descMail">加载中...</p>
+      </div>
+      <div class="reg-config-card">
+        <h4><span class="status-dot yellow" id="dotPool"></span> 账号池</h4>
+        <p id="descPool">加载中...</p>
+      </div>
+    </div>
+
+    <!-- Registration Log -->
+    <div class="section-header">
+      <h2>📋 <span>注册日志</span></h2>
+      <button class="btn btn-outline btn-sm" onclick="clearRegLog()">清空日志</button>
+    </div>
+    <div class="reg-log" id="regLog">
+      <div class="log-info">等待注册任务...</div>
+    </div>
+  </div>
+
+  <!-- ==================== Tab: Account Management ==================== -->
+  <div class="tab-panel" id="panel-accounts">
+    <div class="section-header">
+      <h2>👥 <span>账号管理</span></h2>
+      <div class="header-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-outline btn-sm" onclick="showAddModal()">➕ 添加</button>
+        <button class="btn btn-outline btn-sm" onclick="showBatchModal()">📦 批量导入</button>
+        <button class="btn btn-outline btn-sm" onclick="resetAll()">🔄 重置故障</button>
+        <button class="btn btn-outline btn-sm" onclick="runHealthCheck()">🏥 健康检查</button>
+        <button class="btn btn-warning btn-sm" onclick="purgeInvalid()">🗑 清除无效</button>
+        <button class="btn btn-danger btn-sm" onclick="clearAllAccounts()">⚠️ 清除全部</button>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="stats-bar" id="statsBar">
+      <div class="stat-card blue"><div class="num" id="statTotal">-</div><div class="label">总账号</div></div>
+      <div class="stat-card green"><div class="num" id="statActive">-</div><div class="label">活跃</div></div>
+      <div class="stat-card yellow"><div class="num" id="statDisabled">-</div><div class="label">已禁用</div></div>
+      <div class="stat-card red"><div class="num" id="statFailed">-</div><div class="label">故障中</div></div>
+      <div class="stat-card orange"><div class="num" id="statQuota">-</div><div class="label">剩余点数</div></div>
+      <div class="stat-card purple"><div class="num" id="statToday">-</div><div class="label">今日请求</div></div>
+      <div class="stat-card blue"><div class="num" id="statRequests">-</div><div class="label">总请求</div></div>
+    </div>
+
+    <!-- Batch Toolbar (appears when rows selected) -->
+    <div class="batch-toolbar" id="batchToolbar">
+      <span class="batch-count">已选 <strong id="batchSelectedCount">0</strong> 项</span>
+      <div class="batch-actions">
+        <button class="btn btn-sm btn-outline" onclick="batchAction('test')">🧪 批量测试</button>
+        <button class="btn btn-sm btn-success" onclick="batchAction('enable')">▶ 批量启用</button>
+        <button class="btn btn-sm btn-outline" onclick="batchAction('disable')">⏸ 批量禁用</button>
+        <button class="btn btn-sm btn-outline" onclick="batchAction('refresh')">🔄 批量刷新</button>
+        <button class="btn btn-sm btn-danger" onclick="batchAction('delete')">🗑 批量删除</button>
+      </div>
+      <div style="margin-left:auto;display:flex;gap:6px">
+        <button class="btn btn-xs btn-outline" onclick="selectAllAccounts()">全选本页</button>
+        <button class="btn btn-xs btn-outline" onclick="selectAllGlobal()">全选所有</button>
+        <button class="btn btn-xs btn-outline" onclick="clearSelection()">取消</button>
+      </div>
+    </div>
+
+    <!-- Health Check Result -->
+    <div id="healthResult" style="display:none;margin-bottom:16px">
+      <div class="health-result" id="healthResultContent"></div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" class="row-cb" id="selectAllCb" onchange="onSelectAllChange(this)"></th>
+            <th>邮箱 / 名称</th>
+            <th>Token</th>
+            <th>状态</th>
+            <th>点数</th>
+            <th>请求 / 成功率</th>
+            <th>邮件</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="accountTable">
+          <tr><td colspan="8" class="empty"><div class="icon">📭</div>加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ==================== Tab: Mail Service ==================== -->
+  <div class="tab-panel" id="panel-mail">
+    <div class="section-header">
+      <h2>📧 <span>邮箱服务</span></h2>
+      <button class="btn btn-outline btn-sm" onclick="loadMailStatus()">🔃 刷新</button>
+    </div>
+
+    <div class="mail-status-grid" id="mailStatusGrid">
+      <div class="mail-provider-card">
+        <h4><span class="status-dot yellow" id="dotGptmail"></span> GPTMail</h4>
+        <p class="desc" id="descGptmail">加载中...</p>
+        <div style="font-size:12px;color:var(--text2);font-family:monospace" id="gptmailBase"></div>
+      </div>
+      <div class="mail-provider-card">
+        <h4><span class="status-dot yellow" id="dotYydsmail"></span> YYDSMail</h4>
+        <p class="desc" id="descYydsmail">加载中...</p>
+        <div style="font-size:12px;color:var(--text2);font-family:monospace" id="yydsmailBase"></div>
+      </div>
+    </div>
+
+    <!-- Account email picker -->
+    <div class="mail-account-list">
+      <h4>从已注册账号中选择邮箱查询验证码</h4>
+      <div class="mail-acct-grid" id="mailAcctGrid">
+        <div style="color:var(--text2);font-size:12px;padding:16px;text-align:center">加载中...</div>
+      </div>
+    </div>
+
+    <div class="section-header">
+      <h2>🔍 <span>验证码查询</span></h2>
+    </div>
+    <div class="mail-code-check">
+      <div class="mail-code-form">
+        <input type="email" id="mailCheckEmail" placeholder="输入邮箱地址 或点击上方账号自动填入">
+        <select id="mailCheckProvider" class="model-select" style="width:auto">
+          <option value="gptmail">GPTMail</option>
+          <option value="yydsmail">YYDSMail</option>
+        </select>
+        <button class="btn btn-primary btn-sm" id="mailCheckBtn" onclick="checkMailCode()">查询验证码</button>
+      </div>
+      <div class="code-result" id="codeResult" style="display:none"></div>
+    </div>
+  </div>
+
+  <!-- ==================== Tab: Config Management ==================== -->
+  <div class="tab-panel" id="panel-config">
+    <div class="section-header">
+      <h2>⚙️ <span>系统配置</span></h2>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="loadConfig()">🔃 刷新</button>
+      </div>
+    </div>
+    <div class="config-search">
+      <input type="text" id="configSearchInput" placeholder="搜索配置项..." oninput="filterConfig(this.value)">
+    </div>
+    <div id="configContainer"></div>
   </div>
 </div>
 
@@ -285,16 +548,10 @@ tr:hover { background: rgba(99,102,241,.04); }
 <div class="modal-overlay" id="batchModal">
   <div class="modal">
     <h2>📦 批量导入账号</h2>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">
-      支持两种格式，每行一个账号：
-    </p>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">支持 JSON 数组或每行一个 "token,visitorid,name"</p>
     <div style="font-size:12px;color:var(--text2);background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-family:monospace;line-height:1.7">
-      格式1（JSON 数组，支持所有字段）：<br>
-      [{"token":"abc","visitorid":"xyz","name":"账号1","email":"a@b.com","password":"pass","mail_provider":"gptmail","mail_api_key":"key"}, ...]<br><br>
-      格式2（每行一个，逗号分隔）：<br>
-      token1,visitorid1,名称1<br>
-      token2,visitorid2,名称2<br>
-      token3（仅 token）
+      格式1: [{"token":"abc","visitorid":"xyz","name":"账号1"}, ...]<br>
+      格式2: token1,visitorid1,名称1
     </div>
     <label>账号数据</label>
     <textarea id="batchData" placeholder='粘贴 JSON 数组或每行一个 "token,visitorid,name"'></textarea>
@@ -335,74 +592,36 @@ tr:hover { background: rgba(99,102,241,.04); }
   </div>
 </div>
 
+
 <script>
 // ===================== Auth =====================
 let _authToken = localStorage.getItem('rita_auth_token') || '';
-let _authRequired = false;
 
-function showLogin() {
-  document.getElementById('loginOverlay').classList.add('show');
-  document.getElementById('loginInput').focus();
-}
-function hideLogin() {
-  document.getElementById('loginOverlay').classList.remove('show');
-}
+function showLogin() { document.getElementById('loginOverlay').classList.add('show'); document.getElementById('loginInput').focus(); }
+function hideLogin() { document.getElementById('loginOverlay').classList.remove('show'); }
 
 async function checkAuth() {
   try {
     const r = await fetch('/api/auth/check');
     const d = await r.json();
-    _authRequired = d.auth_required;
-    if (_authRequired && !d.authenticated) {
-      // Try stored token
-      if (_authToken) {
-        const ok = await doLogin(true);
-        if (!ok) showLogin();
-      } else {
-        showLogin();
-      }
-    } else {
-      hideLogin();
-    }
-  } catch(e) {
-    // If check fails, assume no auth needed
-    hideLogin();
-  }
+    if (d.auth_required && !d.authenticated) {
+      if (_authToken) { const ok = await doLogin(true); if (!ok) showLogin(); } else { showLogin(); }
+    } else { hideLogin(); }
+  } catch(e) { hideLogin(); }
 }
 
 async function doLogin(silent = false) {
   const token = silent ? _authToken : document.getElementById('loginInput').value.trim();
   if (!token) { if (!silent) setLoginError('请输入访问令牌'); return false; }
   try {
-    const r = await fetch('/api/login', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({token}),
-    });
-    if (r.ok) {
-      _authToken = token;
-      localStorage.setItem('rita_auth_token', token);
-      setLoginError('');
-      hideLogin();
-      loadData();
-      return true;
-    } else {
-      if (!silent) setLoginError('令牌无效，请重试');
-      return false;
-    }
-  } catch(e) {
-    if (!silent) setLoginError('网络错误：' + e.message);
-    return false;
-  }
+    const r = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({token}) });
+    if (r.ok) { _authToken = token; localStorage.setItem('rita_auth_token', token); setLoginError(''); hideLogin(); loadAllData(); return true; }
+    else { if (!silent) setLoginError('令牌无效，请重试'); return false; }
+  } catch(e) { if (!silent) setLoginError('网络错误'); return false; }
 }
 
-function setLoginError(msg) {
-  document.getElementById('loginError').textContent = msg;
-}
-
-document.getElementById('loginInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') doLogin();
-});
+function setLoginError(msg) { document.getElementById('loginError').textContent = msg; }
+document.getElementById('loginInput').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 
 // ===================== API helper =====================
 async function api(method, path, body) {
@@ -410,185 +629,213 @@ async function api(method, path, body) {
   if (_authToken) opts.headers['Authorization'] = 'Bearer ' + _authToken;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  if (r.status === 401) {
-    _authToken = '';
-    localStorage.removeItem('rita_auth_token');
-    showLogin();
-    throw new Error('Unauthorized');
-  }
+  if (r.status === 401) { _authToken = ''; localStorage.removeItem('rita_auth_token'); showLogin(); throw new Error('Unauthorized'); }
   return r.json();
 }
 
-// ===================== In-memory accounts store =====================
-let _accounts = [];
+// ===================== Tab Navigation =====================
+let _activeTab = 'chat';
 
-// ===================== Data Loading =====================
-async function loadData() {
+function switchTab(tab) {
+  _activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + tab).classList.add('active');
+  document.getElementById('panel-' + tab).classList.add('active');
+
+  // Lazy load data per tab
+  if (tab === 'accounts') loadAccounts();
+  else if (tab === 'config') loadConfig();
+  else if (tab === 'register') loadRegConfig();
+  else if (tab === 'mail') loadMailStatus();
+  else if (tab === 'chat') loadModels();
+}
+
+// ===================== Load All Data =====================
+async function loadAllData() {
+  await Promise.all([loadStats(), loadAccounts(), loadModels()]);
+}
+
+// ===================== In-memory store =====================
+let _accounts = [];
+let _models = [];
+let _chatConversation = [];
+let _selectedIds = new Set();  // batch selection
+
+// ===================== Stats =====================
+async function loadStats() {
   try {
-    const [accounts, summary, stats] = await Promise.all([
-      api('GET', '/api/accounts'),
+    const [summary, stats] = await Promise.all([
       api('GET', '/api/accounts/summary'),
       api('GET', '/api/stats'),
     ]);
+    document.getElementById('statTotal').textContent = summary.total ?? 0;
+    document.getElementById('statActive').textContent = summary.active ?? 0;
+    document.getElementById('statDisabled').textContent = summary.disabled ?? 0;
+    document.getElementById('statFailed').textContent = summary.failed ?? 0;
+    document.getElementById('statQuota').textContent = fmtNum(summary.total_quota ?? 0);
+    document.getElementById('statToday').textContent = fmtNum(stats.requests_today ?? 0);
+    document.getElementById('statRequests').textContent = fmtNum(stats.total_requests ?? 0);
+
+    // Pool status for register tab
+    document.getElementById('descPool').textContent = `活跃账号: ${summary.active ?? 0} / 总计: ${summary.total ?? 0} / 剩余点数: ${summary.total_quota ?? 0}`;
+  } catch(e) { /* silent */ }
+}
+
+function fmtNum(n) { if (n >= 1000000) return (n/1000000).toFixed(1)+'M'; if (n >= 1000) return (n/1000).toFixed(1)+'k'; return String(n); }
+
+// ===================== Account Management =====================
+async function loadAccounts() {
+  try {
+    const [accounts, summary] = await Promise.all([
+      api('GET', '/api/accounts'),
+      api('GET', '/api/accounts/summary'),
+    ]);
     _accounts = accounts.accounts || [];
-    renderStats(summary, stats);
-    renderTable(_accounts);
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('加载数据失败: ' + e.message, 'error');
-  }
+    renderStatsBar(summary);
+    renderAccountTable(_accounts);
+  } catch(e) { if (e.message !== 'Unauthorized') toast('加载账号失败: '+e.message, 'error'); }
 }
 
-// Keep backward compat — old name
-const refresh = loadData;
-
-function fmtUptime(secs) {
-  if (secs < 60) return secs + 's';
-  if (secs < 3600) return Math.floor(secs/60) + 'm';
-  if (secs < 86400) return Math.floor(secs/3600) + 'h ' + Math.floor((secs%3600)/60) + 'm';
-  return Math.floor(secs/86400) + 'd ' + Math.floor((secs%86400)/3600) + 'h';
-}
-
-function fmtNum(n) {
-  if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
-  if (n >= 1000) return (n/1000).toFixed(1) + 'k';
-  return String(n);
-}
-
-function renderStats(s, stats) {
+function renderStatsBar(s) {
   document.getElementById('statTotal').textContent = s.total ?? 0;
   document.getElementById('statActive').textContent = s.active ?? 0;
   document.getElementById('statDisabled').textContent = s.disabled ?? 0;
   document.getElementById('statFailed').textContent = s.failed ?? 0;
-  document.getElementById('statToday').textContent = fmtNum(stats.requests_today ?? 0);
-  document.getElementById('statRequests').textContent = fmtNum(stats.total_requests ?? 0);
-  document.getElementById('statUptime').textContent = fmtUptime(stats.uptime_seconds ?? 0);
+  document.getElementById('statQuota').textContent = fmtNum(s.total_quota ?? 0);
 }
 
-function renderTable(accounts) {
+function renderAccountTable(accounts) {
   const tbody = document.getElementById('accountTable');
-  if (!accounts.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账号，点击「添加账号」或「批量导入」</td></tr>';
-    return;
-  }
+  if (!accounts.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账号</td></tr>'; updateBatchToolbar(); return; }
   tbody.innerHTML = accounts.map(a => {
-    const statusBadge = !a.enabled
-      ? '<span class="badge badge-disabled">已禁用</span>'
-      : a.active
-        ? '<span class="badge badge-active">活跃</span>'
-        : `<span class="badge badge-failed">故障(${a.failures})</span>`;
-    const rate = a.total_requests > 0
-      ? Math.round(a.total_success / a.total_requests * 100) + '%'
-      : '-';
-    const email = a.email
-      ? `<span style="font-size:12px">${esc(a.email)}</span>`
-      : '<span style="color:var(--text2)">-</span>';
-    const mailProv = a.mail_provider
-      ? `<span class="mail-pill">${esc(a.mail_provider)}</span>`
-      : '<span style="color:var(--text2);font-size:12px">-</span>';
-    const refreshBtn = a.refreshable
-      ? `<button class="btn btn-sm btn-outline" onclick="refreshToken('${a.id}', this)" title="刷新 Token">🔄</button>`
-      : '';
+    const checked = _selectedIds.has(a.id) ? 'checked' : '';
+    const statusBadge = !a.enabled ? '<span class="badge badge-disabled">已禁用</span>'
+      : a.active ? '<span class="badge badge-active">活跃</span>'
+      : `<span class="badge badge-failed">故障(${a.failures})</span>`;
+    const rate = a.total_requests > 0 ? Math.round(a.total_success / a.total_requests * 100) + '%' : '-';
+    // Email as primary, name+id as secondary
+    const primaryLine = a.email
+      ? `<strong style="font-size:12px">${esc(a.email)}</strong>`
+      : '<span style="color:var(--text2);font-size:12px">(无邮箱)</span>';
+    const secondaryLine = `<span style="color:var(--text2);font-size:11px">${esc(a.name)} · ${a.id}</span>`;
+    const mailProv = a.mail_provider ? `<span class="mail-pill">${esc(a.mail_provider)}</span>` : '<span style="color:var(--text2);font-size:12px">-</span>';
+    const refreshBtn = a.refreshable ? `<button class="btn btn-xs btn-outline" onclick="refreshToken('${a.id}', this)" title="刷新Token">🔄</button>` : '';
+    const ticketBtn = `<button class="btn btn-xs btn-outline" onclick="getTicket('${a.id}', this)" title="获取Ticket">🎫</button>`;
     return `<tr>
-      <td><strong>${esc(a.name)}</strong><br><span style="color:var(--text2);font-size:11px">${a.id}</span></td>
-      <td>${email}</td>
+      <td><input type="checkbox" class="row-cb" ${checked} onchange="onRowSelect('${a.id}', this.checked)"></td>
+      <td>${primaryLine}<br>${secondaryLine}</td>
       <td><code style="font-size:11px">${esc(a.token_preview)}</code></td>
       <td>${statusBadge}<span id="test-${a.id}"></span></td>
-      <td>${a.total_requests}</td>
-      <td>${rate}</td>
+      <td><span style="color:${a.quota_remain > 50 ? 'var(--green)' : a.quota_remain > 20 ? 'var(--yellow)' : 'var(--red)'}">${a.quota_remain}</span></td>
+      <td>${a.total_requests} <span style="color:var(--text2);font-size:11px">(${rate})</span></td>
       <td>${mailProv}</td>
       <td style="white-space:nowrap">
-        <button class="btn btn-sm btn-outline" onclick="testOne('${a.id}')" title="测试">🧪</button>
-        <button class="btn btn-sm btn-outline" onclick="toggleAccount('${a.id}')" title="${a.enabled ? '禁用' : '启用'}">${a.enabled ? '⏸' : '▶'}</button>
-        <button class="btn btn-sm btn-outline" onclick="showEditModal('${a.id}')" title="编辑">✏️</button>
+        <button class="btn btn-xs btn-outline" onclick="testOne('${a.id}')" title="测试">🧪</button>
+        <button class="btn btn-xs btn-outline" onclick="toggleAccount('${a.id}')" title="${a.enabled?'禁用':'启用'}">${a.enabled?'⏸':'▶'}</button>
+        <button class="btn btn-xs btn-outline" onclick="showEditModal('${a.id}')" title="编辑">✏️</button>
+        ${ticketBtn}
         ${refreshBtn}
-        <button class="btn btn-sm btn-danger" onclick="deleteAccount('${a.id}','${esc(a.name)}')" title="删除">🗑</button>
+        <button class="btn btn-xs btn-danger" onclick="deleteAccount('${a.id}','${esc(a.name)}')" title="删除">🗑</button>
       </td>
     </tr>`;
   }).join('');
+  updateBatchToolbar();
 }
 
-function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
-
-// ===================== Account Operations =====================
-function showAddModal() {
-  // Reset fields
-  ['addToken','addName','addVisitorId','addEmail','addPassword','addMailApiKey'].forEach(id => document.getElementById(id).value = '');
-  document.getElementById('addMailProvider').value = '';
-  document.getElementById('addModal').classList.add('show');
-  document.getElementById('addToken').focus();
+// ===================== Batch Selection =====================
+function onRowSelect(id, checked) {
+  if (checked) _selectedIds.add(id); else _selectedIds.delete(id);
+  updateBatchToolbar();
 }
+function onSelectAllChange(cb) {
+  _accounts.forEach(a => { if (cb.checked) _selectedIds.add(a.id); else _selectedIds.delete(a.id); });
+  renderAccountTable(_accounts);
+}
+function selectAllAccounts() {
+  _accounts.forEach(a => _selectedIds.add(a.id));
+  document.getElementById('selectAllCb').checked = true;
+  renderAccountTable(_accounts);
+}
+function selectAllGlobal() {
+  // Same as selectAllAccounts since _accounts already has all data
+  selectAllAccounts();
+  toast(`已选择全部 ${_accounts.length} 个账号`, 'info');
+}
+function clearSelection() {
+  _selectedIds.clear();
+  document.getElementById('selectAllCb').checked = false;
+  renderAccountTable(_accounts);
+}
+function updateBatchToolbar() {
+  const toolbar = document.getElementById('batchToolbar');
+  const count = _selectedIds.size;
+  if (count > 0) { toolbar.classList.add('show'); document.getElementById('batchSelectedCount').textContent = count; }
+  else { toolbar.classList.remove('show'); }
+}
+
+async function batchAction(action) {
+  const ids = [..._selectedIds];
+  if (!ids.length) { toast('请先选择账号', 'error'); return; }
+  const actionNames = { test:'测试', enable:'启用', disable:'禁用', refresh:'刷新Token', delete:'删除' };
+  if (action === 'delete' && !confirm(`确定批量删除 ${ids.length} 个账号？此操作不可恢复！`)) return;
+  toast(`开始批量${actionNames[action]} ${ids.length} 个账号...`, 'info');
+  try {
+    const res = await api('POST', '/api/accounts/batch-action', { ids, action });
+    toast(`批量${actionNames[action]}完成: ${res.success}/${res.total} 成功`, res.failed > 0 ? 'error' : 'success');
+    // Show test results inline
+    if (action === 'test' && res.details) {
+      for (const [id, r] of Object.entries(res.details)) {
+        const el = document.getElementById('test-'+id);
+        if (!el) continue;
+        if (r.ok) el.innerHTML = `<span class="test-result test-ok">✓ ${r.latency_ms}ms</span>`;
+        else el.innerHTML = `<span class="test-result test-fail">✗</span>`;
+      }
+    } else {
+      _selectedIds.clear();
+      loadAccounts(); loadStats();
+    }
+  } catch(e) { if (e.message !== 'Unauthorized') toast('批量操作失败: '+e.message, 'error'); }
+}
+
+function esc(s) { return (String(s)||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// Account CRUD
+function showAddModal() { ['addToken','addName','addVisitorId','addEmail','addPassword','addMailApiKey'].forEach(id => document.getElementById(id).value=''); document.getElementById('addMailProvider').value=''; document.getElementById('addModal').classList.add('show'); document.getElementById('addToken').focus(); }
 function showBatchModal() { document.getElementById('batchModal').classList.add('show'); document.getElementById('batchData').focus(); }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
 async function addAccount() {
   const token = document.getElementById('addToken').value.trim();
   if (!token) { toast('Token 不能为空', 'error'); return; }
-  const data = {
-    token,
-    name: document.getElementById('addName').value.trim(),
-    visitorid: document.getElementById('addVisitorId').value.trim(),
-    email: document.getElementById('addEmail').value.trim(),
-    password: document.getElementById('addPassword').value.trim(),
-    mail_provider: document.getElementById('addMailProvider').value,
-    mail_api_key: document.getElementById('addMailApiKey').value.trim(),
-  };
   try {
-    await api('POST', '/api/accounts', data);
-    closeModal('addModal');
-    toast('账号已添加', 'success');
-    loadData();
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('添加失败: ' + e.message, 'error');
-  }
+    await api('POST', '/api/accounts', { token, name: document.getElementById('addName').value.trim(), visitorid: document.getElementById('addVisitorId').value.trim(), email: document.getElementById('addEmail').value.trim(), password: document.getElementById('addPassword').value.trim(), mail_provider: document.getElementById('addMailProvider').value, mail_api_key: document.getElementById('addMailApiKey').value.trim() });
+    closeModal('addModal'); toast('账号已添加', 'success'); loadAccounts(); loadStats();
+  } catch(e) { if (e.message !== 'Unauthorized') toast('添加失败: '+e.message, 'error'); }
 }
 
 async function batchImport() {
   const raw = document.getElementById('batchData').value.trim();
   if (!raw) { toast('请输入数据', 'error'); return; }
-
   let accounts;
-  try {
-    accounts = JSON.parse(raw);
-    if (!Array.isArray(accounts)) throw new Error('not array');
-  } catch {
-    // Parse line-by-line CSV: token,visitorid,name
-    accounts = raw.split('\n').filter(l => l.trim()).map(line => {
-      const parts = line.split(',').map(s => s.trim());
-      return { token: parts[0] || '', visitorid: parts[1] || '', name: parts[2] || '' };
-    });
-  }
-
+  try { accounts = JSON.parse(raw); if (!Array.isArray(accounts)) throw new Error('not array'); }
+  catch { accounts = raw.split('\n').filter(l=>l.trim()).map(line => { const parts = line.split(',').map(s=>s.trim()); return {token:parts[0]||'',visitorid:parts[1]||'',name:parts[2]||''}; }); }
   accounts = accounts.filter(a => a.token);
   if (!accounts.length) { toast('未解析到有效账号', 'error'); return; }
-
   try {
     const res = await api('POST', '/api/accounts/batch', { accounts });
-    closeModal('batchModal');
-    document.getElementById('batchData').value = '';
-    toast(`成功导入 ${res.added || 0} 个账号`, 'success');
-    loadData();
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('导入失败: ' + e.message, 'error');
-  }
+    closeModal('batchModal'); document.getElementById('batchData').value='';
+    toast(`成功导入 ${res.added || 0} 个账号`, 'success'); loadAccounts(); loadStats();
+  } catch(e) { if (e.message !== 'Unauthorized') toast('导入失败: '+e.message, 'error'); }
 }
 
 async function deleteAccount(id, name) {
   if (!confirm(`确定删除账号「${name}」？`)) return;
-  try {
-    await api('DELETE', `/api/accounts/${id}`);
-    toast('账号已删除', 'success');
-    loadData();
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('删除失败', 'error');
-  }
+  try { await api('DELETE', `/api/accounts/${id}`); toast('账号已删除', 'success'); loadAccounts(); loadStats(); }
+  catch(e) { if (e.message !== 'Unauthorized') toast('删除失败', 'error'); }
 }
 
-async function toggleAccount(id) {
-  try {
-    await api('POST', `/api/accounts/${id}/toggle`);
-    loadData();
-  } catch(e) { /* handled */ }
-}
+async function toggleAccount(id) { try { await api('POST', `/api/accounts/${id}/toggle`); loadAccounts(); } catch(e) {} }
 
 function showEditModal(id) {
   const a = _accounts.find(x => x.id === id);
@@ -618,8 +865,6 @@ async function saveEdit() {
   const password = document.getElementById('editPassword').value.trim();
   const mailProvider = document.getElementById('editMailProvider').value;
   const mailApiKey = document.getElementById('editMailApiKey').value.trim();
-
-  // Always send name, email, mail_provider (they can be cleared)
   if (name !== undefined) fields.name = name;
   if (token) fields.token = token;
   if (vid) fields.visitorid = vid;
@@ -627,75 +872,524 @@ async function saveEdit() {
   if (password) fields.password = password;
   fields.mail_provider = mailProvider;
   if (mailApiKey) fields.mail_api_key = mailApiKey;
-
-  try {
-    await api('PUT', `/api/accounts/${id}`, fields);
-    closeModal('editModal');
-    toast('账号已更新', 'success');
-    loadData();
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('更新失败', 'error');
-  }
+  try { await api('PUT', `/api/accounts/${id}`, fields); closeModal('editModal'); toast('账号已更新', 'success'); loadAccounts(); }
+  catch(e) { if (e.message !== 'Unauthorized') toast('更新失败', 'error'); }
 }
 
-// ===================== Refresh Token =====================
 async function refreshToken(id, btn) {
-  btn.disabled = true;
-  btn.textContent = '⏳';
+  btn.disabled = true; btn.textContent = '⏳';
   try {
     const res = await api('POST', `/api/accounts/${id}/refresh`);
-    if (res.ok) {
-      toast('Token 刷新成功', 'success');
-      loadData();
-    } else {
-      toast('刷新失败: ' + (res.error || '未知错误'), 'error');
-    }
-  } catch(e) {
-    if (e.message !== 'Unauthorized') toast('刷新失败: ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🔄';
-  }
+    if (res.ok) { toast('Token 刷新成功', 'success'); loadAccounts(); }
+    else { toast('刷新失败: ' + (res.error || '未知错误'), 'error'); }
+  } catch(e) { if (e.message !== 'Unauthorized') toast('刷新失败: '+e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '🔄'; }
 }
 
-// ===================== Testing =====================
+async function getTicket(id, btn) {
+  btn.disabled = true; btn.textContent = '⏳';
+  try {
+    const res = await api('POST', `/api/accounts/${id}/ticket`);
+    if (res.ok && res.ticket) { toast('Ticket: ' + res.ticket.substring(0, 20) + '...', 'success'); }
+    else { toast('获取失败: ' + (res.message || res.error || '未知'), 'error'); }
+  } catch(e) { if (e.message !== 'Unauthorized') toast('获取失败: '+e.message, 'error'); }
+  finally { btn.disabled = false; btn.textContent = '🎫'; }
+}
+
+// Account Testing
 async function testOne(id) {
-  const el = document.getElementById(`test-${id}`);
+  const el = document.getElementById('test-'+id);
   el.innerHTML = '<span class="test-result" style="background:rgba(99,102,241,.15);color:var(--accent)">测试中...</span>';
   try {
     const res = await api('POST', `/api/accounts/${id}/test`);
-    if (res.ok) {
-      el.innerHTML = `<span class="test-result test-ok">✓ ${res.latency_ms}ms ${res.models}模型</span>`;
-    } else {
-      el.innerHTML = `<span class="test-result test-fail">✗ ${res.error || res.message || '失败'}</span>`;
-    }
-  } catch(e) { /* handled */ }
+    if (res.ok) { el.innerHTML = `<span class="test-result test-ok">✓ ${res.latency_ms}ms ${res.models}模型</span>`; }
+    else { el.innerHTML = `<span class="test-result test-fail">✗ ${res.error || res.message || '失败'}</span>`; }
+  } catch(e) {}
 }
 
 async function testAll() {
-  toast('开始测试所有账号...', 'info');
-  try {
-    const res = await api('POST', '/api/accounts/test-all');
-    const results = res.results || {};
-    for (const [id, r] of Object.entries(results)) {
-      const el = document.getElementById(`test-${id}`);
-      if (!el) continue;
-      if (r.ok) {
-        el.innerHTML = `<span class="test-result test-ok">✓ ${r.latency_ms}ms</span>`;
-      } else {
-        el.innerHTML = `<span class="test-result test-fail">✗</span>`;
-      }
-    }
-    toast(`测试完成: ${res.ok_count}/${res.total} 通过`, res.ok_count === res.total ? 'success' : 'error');
-  } catch(e) { /* handled */ }
+  // Select all and run batch test
+  _accounts.forEach(a => _selectedIds.add(a.id));
+  renderAccountTable(_accounts);
+  await batchAction('test');
 }
 
 async function resetAll() {
+  try { await api('POST', '/api/accounts/reset'); toast('已重置所有故障计数', 'success'); loadAccounts(); }
+  catch(e) {}
+}
+
+async function runHealthCheck() {
+  const el = document.getElementById('healthResult');
+  el.style.display = 'block';
+  document.getElementById('healthResultContent').innerHTML = '<span style="color:var(--accent)">正在运行健康检查...</span>';
   try {
-    await api('POST', '/api/accounts/reset');
-    toast('已重置所有故障计数', 'success');
-    loadData();
-  } catch(e) { /* handled */ }
+    const res = await api('POST', '/api/health-check/run');
+    const r = res.results || {};
+    let html = `<div style="margin-bottom:8px;font-size:13px">
+      <span style="color:var(--green)">通过: ${res.ok_count}</span> /
+      <span style="color:var(--red)">失败: ${res.total - res.ok_count}</span> /
+      <span style="color:var(--orange)">自动禁用: ${res.auto_disabled}</span>
+    </div>`;
+    html += '<div style="font-size:11px;color:var(--text2)">';
+    for (const [id, data] of Object.entries(r)) {
+      const a = _accounts.find(x => x.id === id);
+      const name = a ? a.name : id;
+      if (data.ok) { html += `<div class="log-ok">✓ ${esc(name)}: ${data.latency_ms}ms</div>`; }
+      else { html += `<div class="log-err">✗ ${esc(name)}: ${data.error || data.message || '失败'}</div>`; }
+    }
+    html += '</div>';
+    document.getElementById('healthResultContent').innerHTML = html;
+    loadAccounts();
+  } catch(e) { document.getElementById('healthResultContent').innerHTML = '<span style="color:var(--red)">检查失败: '+esc(e.message)+'</span>'; }
+}
+
+async function purgeInvalid() {
+  if (!confirm('确定清除所有无效账号？')) return;
+  try { const res = await api('POST', '/api/accounts/purge-invalid'); toast(`已清除 ${res.purged || 0} 个无效账号`, 'success'); loadAccounts(); }
+  catch(e) { if (e.message !== 'Unauthorized') toast('清除失败', 'error'); }
+}
+
+async function clearAllAccounts() {
+  if (!confirm('⚠️ 危险操作！确定清除全部账号？此操作不可恢复！')) return;
+  if (!confirm('再次确认：清除 ALL 账号？')) return;
+  try { const res = await api('DELETE', '/api/accounts/clear'); toast(`已清除 ${res.deleted || 0} 个账号`, 'success'); loadAccounts(); loadStats(); }
+  catch(e) { if (e.message !== 'Unauthorized') toast('清除失败', 'error'); }
+}
+
+// ===================== Chat Plaza =====================
+async function loadModels() {
+  try {
+    const res = await api('GET', '/v1/models');
+    _models = res.data || [];
+    const sel = document.getElementById('chatModel');
+    sel.innerHTML = _models.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join('');
+    if (_models.length > 0) { sel.value = _models[0].id; onModelChange(); }
+    else { sel.innerHTML = '<option value="">无模型可用</option>'; }
+  } catch(e) {
+    document.getElementById('chatModel').innerHTML = '<option value="">加载失败</option>';
+  }
+}
+
+function onModelChange() {
+  const sel = document.getElementById('chatModel');
+  const m = _models.find(x => x.id === sel.value);
+  document.getElementById('curModelName').textContent = m ? (m.name || m.id) : '-';
+}
+
+function clearChat() {
+  _chatConversation = [];
+  document.getElementById('chatMessages').innerHTML = '<div class="chat-msg system">💬 对话已清空</div>';
+}
+
+function onChatKeyDown(e) {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage();
+  }
+}
+
+function appendMessage(role, content) {
+  const ms = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.className = 'chat-msg ' + role;
+  if (role === 'assistant') {
+    // Handle code blocks
+    content = content.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre>$2</pre>');
+    content = content.replace(/`([^`]+)`/g, '<code>$1</code>');
+  }
+  div.innerHTML = content;
+  ms.appendChild(div);
+  ms.scrollTop = ms.scrollHeight;
+}
+
+async function sendMessage() {
+  const input = document.getElementById('chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  const model = document.getElementById('chatModel').value;
+  if (!model) { toast('请先选择一个模型', 'error'); return; }
+
+  const btn = document.getElementById('chatSendBtn');
+  btn.disabled = true;
+  document.getElementById('chatStatus').textContent = '思考中...';
+  document.getElementById('chatStatus').style.color = 'var(--yellow)';
+
+  // Show user message
+  appendMessage('user', esc(text));
+  input.value = '';
+
+  // Create assistant placeholder
+  const ms = document.getElementById('chatMessages');
+  const placeholder = document.createElement('div');
+  placeholder.className = 'chat-msg assistant';
+  placeholder.innerHTML = '<span style="color:var(--text2)">思考中...</span>';
+  ms.appendChild(placeholder);
+  ms.scrollTop = ms.scrollHeight;
+
+  _chatConversation.push({ role: 'user', content: text });
+
+  try {
+    const res = await fetch('/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: _chatConversation, stream: false }),
+    });
+    const data = await res.json();
+    if (data.error) {
+      placeholder.innerHTML = `<span style="color:var(--red)">错误: ${esc(data.error.message || JSON.stringify(data.error))}</span>`;
+    } else {
+      const reply = data.choices?.[0]?.message?.content || '';
+      placeholder.innerHTML = reply.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre>$2</pre>').replace(/`([^`]+)`/g, '<code>$1</code>');
+      _chatConversation.push({ role: 'assistant', content: reply });
+    }
+  } catch(e) {
+    placeholder.innerHTML = `<span style="color:var(--red)">请求失败: ${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false;
+    document.getElementById('chatStatus').textContent = '就绪';
+    document.getElementById('chatStatus').style.color = 'var(--green)';
+    ms.scrollTop = ms.scrollHeight;
+  }
+}
+
+// ===================== Auto Register =====================
+function loadRegConfig() {
+  Promise.all([api('GET', '/api/auto-register/config'), api('GET', '/api/accounts/summary'), api('GET', '/api/stats')])
+    .then(([cfg, summary, stats]) => {
+      // Auto reg
+      const dotAR = document.getElementById('dotAutoReg');
+      if (cfg.auto_register_enabled) { dotAR.className = 'status-dot green'; document.getElementById('descAutoReg').textContent = `已启用 | 最低活跃: ${cfg.min_active_accounts} | 批量: ${cfg.batch_size}`; }
+      else { dotAR.className = 'status-dot yellow'; document.getElementById('descAutoReg').textContent = '未启用 (设置 AUTO_REGISTER_ENABLED=1)'; }
+
+      // Captcha
+      const dotCP = document.getElementById('dotCaptcha');
+      if (cfg.yescaptcha_configured) { dotCP.className = 'status-dot green'; document.getElementById('descCaptcha').textContent = `已配置 | Sitekey: ${cfg.recaptcha_sitekey.substring(0, 20)}...`; }
+      else { dotCP.className = 'status-dot red'; document.getElementById('descCaptcha').textContent = '未配置 (需要 YESCAPTCHA_KEY)'; }
+
+      // Mail
+      const dotMail = document.getElementById('dotMail');
+      if (cfg.gptmail_configured) { dotMail.className = 'status-dot green'; document.getElementById('descMail').textContent = `GPTMail 已配置 | ${cfg.gptmail_api_base}`; }
+      else if (cfg.yydsmail_configured) { dotMail.className = 'status-dot green'; document.getElementById('descMail').textContent = `YYDSMail 已配置 | ${cfg.yydsmail_api_base}`; }
+      else { dotMail.className = 'status-dot red'; document.getElementById('descMail').textContent = '未配置邮件服务 (GPTMAIL_API_KEY 或 YYDSMAIL_API_KEY)'; }
+
+      // Pool
+      document.getElementById('descPool').textContent = `活跃: ${summary.active ?? 0} / 总: ${summary.total ?? 0} / 点数: ${summary.total_quota ?? 0}`;
+    }).catch(e => {});
+}
+
+async function triggerRegister() {
+  const count = parseInt(document.getElementById('regCount').value);
+  const btn = document.getElementById('regBtn');
+  btn.disabled = true; btn.textContent = '注册中...';
+  addRegLog('info', `开始注册 ${count} 个账号...`);
+
+  try {
+    const res = await api('POST', '/api/auto-register', { count });
+    if (res.registered > 0) {
+      addRegLog('ok', `✅ 成功注册 ${res.registered}/${res.requested} 个账号`);
+      if (res.accounts) {
+        res.accounts.forEach(acc => {
+          addRegLog('ok', `  + ${acc.email || 'unknown'} | token: ${(acc.token || '').substring(0, 12)}...`);
+        });
+      }
+      loadAccounts(); loadStats(); loadRegConfig();
+    } else {
+      addRegLog('err', `❌ 注册失败: ${res.error || '未知错误'}`);
+      if (res.config) {
+        const missing = [];
+        if (!res.config.yescaptcha_configured) missing.push('YESCAPTCHA_KEY');
+        if (!res.config.gptmail_configured) missing.push('GPTMAIL_API_KEY');
+        if (missing.length) addRegLog('err', `  缺失配置: ${missing.join(', ')}`);
+      }
+    }
+  } catch(e) {
+    addRegLog('err', `❌ 请求失败: ${e.message}`);
+  } finally {
+    btn.disabled = false; btn.textContent = '🚀 手动注册';
+  }
+}
+
+function addRegLog(type, msg) {
+  const log = document.getElementById('regLog');
+  const div = document.createElement('div');
+  const cls = type === 'ok' ? 'log-ok' : type === 'err' ? 'log-err' : type === 'warn' ? 'log-warn' : 'log-info';
+  div.className = cls;
+  const ts = new Date().toLocaleTimeString('zh-CN');
+  div.textContent = `[${ts}] ${msg}`;
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+}
+
+function clearRegLog() { document.getElementById('regLog').innerHTML = '<div class="log-info">日志已清空</div>'; }
+
+// ===================== Mail Service =====================
+function loadMailStatus() {
+  // Load mail provider status
+  api('GET', '/api/mail/status').then(res => {
+    const gpt = res.gptmail || {};
+    const dotG = document.getElementById('dotGptmail');
+    if (gpt.configured) { dotG.className = 'status-dot green'; document.getElementById('descGptmail').textContent = '已配置并可用'; }
+    else { dotG.className = 'status-dot red'; document.getElementById('descGptmail').textContent = '未配置 (需要 GPTMAIL_API_KEY)'; }
+    document.getElementById('gptmailBase').textContent = 'API: ' + (gpt.api_base || '-');
+
+    const yyds = res.yydsmail || {};
+    const dotY = document.getElementById('dotYydsmail');
+    if (yyds.configured) { dotY.className = 'status-dot green'; document.getElementById('descYydsmail').textContent = '已配置并可用'; }
+    else { dotY.className = 'status-dot red'; document.getElementById('descYydsmail').textContent = '未配置 (需要 YYDSMAIL_API_KEY)'; }
+    document.getElementById('yydsmailBase').textContent = 'API: ' + (yyds.api_base || '-');
+  }).catch(e => {});
+
+  // Load account emails for picker
+  loadMailAccountEmails();
+}
+
+async function loadMailAccountEmails() {
+  try {
+    const res = await api('GET', '/api/accounts/emails');
+    const accts = res.accounts || [];
+    const grid = document.getElementById('mailAcctGrid');
+    if (!accts.length) {
+      grid.innerHTML = '<div style="color:var(--text2);font-size:12px;padding:12px;text-align:center">暂无配置了邮箱的账号</div>';
+      return;
+    }
+    grid.innerHTML = accts.map(a => {
+      const provBadge = a.mail_provider ? `<span class="mail-pill acct-prov">${esc(a.mail_provider)}</span>` : '';
+      return `<div class="mail-acct-item" onclick="selectMailAccount('${esc(a.email)}','${esc(a.mail_provider || 'gptmail')}')">
+        <div style="flex:1;overflow:hidden">
+          <div class="acct-email">${esc(a.email)}</div>
+          <div class="acct-name">${esc(a.name)}</div>
+        </div>
+        ${provBadge}
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('mailAcctGrid').innerHTML = '<div style="color:var(--red);font-size:12px;padding:12px">加载失败</div>';
+  }
+}
+
+function selectMailAccount(email, provider) {
+  document.getElementById('mailCheckEmail').value = email;
+  document.getElementById('mailCheckProvider').value = provider;
+  document.getElementById('mailCheckEmail').focus();
+  toast('已选择: ' + email, 'info');
+}
+
+async function checkMailCode() {
+  const email = document.getElementById('mailCheckEmail').value.trim();
+  const provider = document.getElementById('mailCheckProvider').value;
+  const result = document.getElementById('codeResult');
+  const btn = document.getElementById('mailCheckBtn');
+  if (!email) { toast('请输入邮箱地址', 'error'); return; }
+  result.style.display = 'block';
+  result.innerHTML = '<span style="color:var(--text2)">正在查询验证码...</span>';
+  btn.disabled = true; btn.textContent = '查询中...';
+  try {
+    const res = await api('POST', '/api/mail/check-code', { email, mail_provider: provider });
+    if (res.ok && res.code) {
+      result.innerHTML = `<div>📧 验证码: <span class="code">${esc(res.code)}</span></div><div style="font-size:11px;color:var(--text2);margin-top:4px">邮箱: ${esc(res.email)}</div>`;
+    } else {
+      result.innerHTML = `<span style="color:var(--yellow)">暂无验证码: ${esc(res.message || res.error || '未找到')}</span>`;
+    }
+  } catch(e) {
+    result.innerHTML = `<span style="color:var(--red)">查询失败: ${esc(e.message)}</span>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '查询验证码';
+  }
+}
+
+// ===================== Config Management =====================
+let _configs = [];
+let _configFilter = '';
+
+// Semantic grouping with icons and friendly names
+const CONFIG_GROUPS = {
+  '核心设置': { icon: '🌐', keys: ['RITA_UPSTREAM', 'RITA_ORIGIN', 'DISABLE_SSL_VERIFY', 'HOST', 'PORT'] },
+  '访问安全': { icon: '🔒', keys: ['AUTH_TOKEN', 'FLASK_SECRET'] },
+  '自动注册': { icon: '🤖', keys: ['AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH', 'AUTO_REGISTER_PASSWORD', 'AUTO_REGISTER_MIN_QUOTA'] },
+  '验证码服务': { icon: '🧩', keys: ['YESCAPTCHA_KEY', 'CAPTCHA_PROVIDER'] },
+  '邮件服务': { icon: '📧', keys: ['GPTMAIL_API_KEY', 'GPTMAIL_API_BASE', 'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE'] },
+  '健康检查': { icon: '🏥', keys: ['HEALTH_CHECK_INTERVAL'] },
+};
+
+// Config descriptions for helper text
+const CONFIG_DESC = {
+  'RITA_UPSTREAM': 'Rita.ai 上游 API 地址，所有请求将转发到此 URL',
+  'RITA_ORIGIN': '请求 Headers 中的 Origin，用于上游鉴权',
+  'AUTH_TOKEN': '管理面板访问令牌，留空则无需登录（建议设置）',
+  'DISABLE_SSL_VERIFY': '是否跳过上游 SSL 证书验证（解决证书域名不匹配问题）',
+  'HEALTH_CHECK_INTERVAL': '后台健康检查间隔时间（秒），默认 600',
+  'AUTO_REGISTER_ENABLED': '启用后，当活跃账号低于最低数量时自动注册新账号',
+  'AUTO_REGISTER_MIN_ACTIVE': '自动补号触发阈值：活跃账号低于此数量时触发',
+  'AUTO_REGISTER_BATCH': '每次自动补号注册的账号数量',
+  'AUTO_REGISTER_PASSWORD': '自动注册时设置的默认密码',
+  'AUTO_REGISTER_MIN_QUOTA': '当总剩余点数低于此值时触发自动补号',
+  'YESCAPTCHA_KEY': 'YesCaptcha 打码服务 API Key，用于解决注册验证码',
+  'CAPTCHA_PROVIDER': '验证码服务商：yescaptcha 或 whisper',
+  'GPTMAIL_API_KEY': 'GPTMail 临时邮箱 API Key，用于接收注册验证码',
+  'GPTMAIL_API_BASE': 'GPTMail API 基础 URL',
+  'YYDSMAIL_API_KEY': 'YYDSMail 邮箱 API Key',
+  'YYDSMAIL_API_BASE': 'YYDSMail API 基础 URL',
+  'FLASK_SECRET': 'Flask 会话密钥（自动生成，一般无需修改）',
+};
+
+// Which keys are boolean toggles
+const CONFIG_BOOLEANS = new Set(['DISABLE_SSL_VERIFY', 'AUTO_REGISTER_ENABLED']);
+// Which keys are secrets (show/hide toggle)
+const CONFIG_SECRETS = new Set(['AUTH_TOKEN', 'YESCAPTCHA_KEY', 'GPTMAIL_API_KEY', 'YYDSMAIL_API_KEY', 'FLASK_SECRET', 'AUTO_REGISTER_PASSWORD']);
+
+async function loadConfig() {
+  try {
+    const res = await api('GET', '/api/config');
+    _configs = res.configs || [];
+    renderConfig();
+  } catch(e) { if (e.message !== 'Unauthorized') toast('加载配置失败', 'error'); }
+}
+
+function filterConfig(query) {
+  _configFilter = query.toLowerCase().trim();
+  renderConfig();
+}
+
+function renderConfig() {
+  const container = document.getElementById('configContainer');
+  const assignedKeys = new Set();
+  let html = '';
+
+  // Render known groups
+  for (const [groupName, group] of Object.entries(CONFIG_GROUPS)) {
+    const items = group.keys.map(k => _configs.find(c => c.key === k)).filter(Boolean);
+    if (!items.length) continue;
+
+    // Filter
+    const filtered = items.filter(c =>
+      !_configFilter ||
+      c.key.toLowerCase().includes(_configFilter) ||
+      (CONFIG_DESC[c.key] || '').toLowerCase().includes(_configFilter) ||
+      groupName.toLowerCase().includes(_configFilter)
+    );
+    if (!filtered.length) continue;
+
+    items.forEach(c => assignedKeys.add(c.key));
+
+    html += `<div class="config-section">
+      <div class="config-section-title">
+        <span class="section-icon">${group.icon}</span> ${esc(groupName)}
+        <span class="section-count">${filtered.length}</span>
+      </div>`;
+    filtered.forEach(c => { html += renderConfigRow(c); });
+    html += '</div>';
+  }
+
+  // Render uncategorized
+  const uncategorized = _configs.filter(c =>
+    !assignedKeys.has(c.key) &&
+    (!_configFilter || c.key.toLowerCase().includes(_configFilter) || (c.description || '').toLowerCase().includes(_configFilter))
+  );
+  if (uncategorized.length) {
+    html += `<div class="config-section">
+      <div class="config-section-title">
+        <span class="section-icon">📋</span> 其他配置
+        <span class="section-count">${uncategorized.length}</span>
+      </div>`;
+    uncategorized.forEach(c => { html += renderConfigRow(c); });
+    html += '</div>';
+  }
+
+  container.innerHTML = html || '<div class="empty"><div class="icon">🔍</div>未找到匹配的配置项</div>';
+}
+
+function renderConfigRow(c) {
+  const key = c.key;
+  const value = c.value || '';
+  const desc = CONFIG_DESC[key] || c.description || '';
+  const isBool = CONFIG_BOOLEANS.has(key);
+  const isSecret = CONFIG_SECRETS.has(key);
+  const inputId = 'cfg-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+
+  let editHtml = '';
+  if (isBool) {
+    const checked = value === '1' || value === 'true' ? 'checked' : '';
+    editHtml = `<div class="toggle-wrap">
+      <label class="toggle">
+        <input type="checkbox" ${checked} onchange="saveConfigInline('${esc(key)}', this.checked ? '1' : '0', this)">
+        <span class="slider"></span>
+      </label>
+      <span class="toggle-label">${checked ? '已启用' : '已禁用'}</span>
+    </div>`;
+  } else if (isSecret) {
+    const masked = value ? (value.substring(0, 4) + '••••' + (value.length > 8 ? value.substring(value.length - 4) : '')) : '';
+    editHtml = `<div class="cfg-edit-row">
+      <div class="cfg-secret-wrap">
+        <input type="password" class="cfg-input" id="${inputId}" value="${esc(value)}" placeholder="${masked || '未设置'}" autocomplete="off">
+        <button class="cfg-reveal-btn" onclick="toggleReveal(this)" title="显示/隐藏" type="button">👁</button>
+      </div>
+      <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+    </div>`;
+  } else {
+    editHtml = `<div class="cfg-edit-row">
+      <input type="text" class="cfg-input" id="${inputId}" value="${esc(value)}" placeholder="未设置">
+      <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+    </div>`;
+  }
+
+  return `<div class="cfg-row" id="cfgrow-${key.replace(/[^a-zA-Z0-9]/g, '_')}">
+    <div class="cfg-header">
+      <span class="cfg-key">${esc(key)}</span>
+    </div>
+    ${desc ? `<div class="cfg-desc">${esc(desc)}</div>` : ''}
+    ${editHtml}
+  </div>`;
+}
+
+function toggleReveal(btn) {
+  const input = btn.parentElement.querySelector('input');
+  if (input.type === 'password') { input.type = 'text'; btn.textContent = '🙈'; }
+  else { input.type = 'password'; btn.textContent = '👁'; }
+}
+
+async function saveConfigInline(key, value, triggerEl) {
+  // Find the row element for animation
+  const rowId = 'cfgrow-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+  const row = document.getElementById(rowId);
+
+  // Disable save button if it's a button
+  let saveBtn = null;
+  if (triggerEl && triggerEl.tagName === 'BUTTON' && triggerEl.classList.contains('cfg-save-btn')) {
+    saveBtn = triggerEl;
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+  }
+
+  try {
+    await api('PUT', '/api/config', { configs: { [key]: value } });
+
+    // Success feedback animation
+    if (row) {
+      row.classList.add('saved');
+      setTimeout(() => row.classList.remove('saved'), 1500);
+    }
+    if (saveBtn) {
+      saveBtn.classList.add('saved');
+      saveBtn.textContent = '✓ 已保存';
+      setTimeout(() => {
+        saveBtn.classList.remove('saved');
+        saveBtn.textContent = '保存';
+        saveBtn.disabled = false;
+      }, 1500);
+    }
+
+    // Update toggle label if boolean
+    if (CONFIG_BOOLEANS.has(key)) {
+      const toggleLabel = triggerEl?.closest('.toggle-wrap')?.querySelector('.toggle-label');
+      if (toggleLabel) toggleLabel.textContent = value === '1' ? '已启用' : '已禁用';
+    }
+
+    toast(`${key} 已更新`, 'success');
+  } catch(e) {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
+    if (e.message !== 'Unauthorized') toast('保存失败: ' + e.message, 'error');
+  }
 }
 
 // ===================== Toast =====================
@@ -715,13 +1409,22 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape') document.querySelectorAll('.modal-overlay.show').forEach(m => m.classList.remove('show'));
 });
 
-// Boot sequence: check auth first, then load data
+// Boot: check auth, then load data
 checkAuth().then(() => {
   if (!document.getElementById('loginOverlay').classList.contains('show')) {
-    loadData();
+    loadAllData();
+    loadRegConfig();
+    loadMailStatus();
   }
 });
-setInterval(loadData, 30000);  // auto-refresh every 30s
+
+setInterval(() => {
+  if (!document.getElementById('loginOverlay').classList.contains('show')) {
+    if (_activeTab === 'accounts') loadAccounts();
+    if (_activeTab === 'register') loadRegConfig();
+    if (_activeTab === 'chat') {} // Don't auto-reload chat
+  }
+}, 30000);
 </script>
 </body>
 </html>

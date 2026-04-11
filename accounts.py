@@ -16,11 +16,21 @@ from threading import Lock
 from database import get_db
 
 _KEY_FAIL_THRESHOLD = 3
-_DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
 _HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "600"))
 
-if _DISABLE_SSL_VERIFY:
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# SSL verify: read from DB if available, fallback to env
+def _get_ssl_verify_disabled() -> bool:
+    try:
+        db = get_db()
+        val = db.get_config("DISABLE_SSL_VERIFY", "")
+        if val:
+            return val == "1"
+    except Exception:
+        pass
+    return os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
+
+# Disable SSL warnings globally if configured
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
 def _mask(s: str) -> str:
@@ -266,6 +276,7 @@ class AccountManager:
         }
         if acc.token:
             headers["token"] = acc.token
+            headers["Cookie"] = f"token={acc.token}"
         if acc.visitorid:
             headers["visitorid"] = acc.visitorid
 
@@ -274,7 +285,7 @@ class AccountManager:
             r = requests.post(
                 f"{upstream_url}/aichat/categoryModels",
                 headers=headers, json={"language": "zh"},
-                timeout=10, verify=not _DISABLE_SSL_VERIFY,
+                timeout=10, verify=not _get_ssl_verify_disabled(),
             )
             latency = round((time.time() - start) * 1000)
 
@@ -328,6 +339,7 @@ class AccountManager:
         }
         if acc.token:
             h["token"] = acc.token
+            h["Cookie"] = f"token={acc.token}"
         if acc.visitorid:
             h["visitorid"] = acc.visitorid
         return h
