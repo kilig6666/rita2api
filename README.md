@@ -69,6 +69,7 @@ Cookie:  token=<gosplit_token>
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `POST` | `/v1/chat/completions` | OpenAI Chat Completions（流式 + 非流式） |
+| `POST` | `/v1/responses` | OpenAI Responses API（流式 + 非流式） |
 | `GET` | `/v1/models` | 模型目录（来自 Rita） |
 | `POST` | `/v1/chat/init` | 创建新对话 |
 | `GET` | `/v1/tools` | 可用 AI 工具列表 |
@@ -147,14 +148,33 @@ Cookie:  token=<gosplit_token>
 
 ## 点数系统
 
-每个账号初始 100 点，不同模型消耗不同点数：
+每个账号初始 100 点，不同模型消耗不同点数（与 Rita 官方一致）：
 
-| 等级 | 点数 | 模型示例 |
-|------|------|----------|
-| Basic | 0 | Rita (model_25) |
-| Standard | 1-2 | Rita-Pro, GPT-4.1-mini, Gemini-3-Flash |
-| Premium | 5 | GPT-5.4, Gemini-3.1-Pro, GPT-4.1 |
-| Ultra | 10 | Gemini-3.1-Pro-Thinking |
+| 点数 | 模型 |
+|------|------|
+| 0 | Rita, GPT-4.1-nano, GPT-5-nano |
+| 1 | Rita-Pro, GPT-4.1-mini, GPT-5-mini, Gemini-2.5-Pro-0605, Gemini-3-Flash, DeepSeek-V3, DeepSeek-R1 |
+| 2 | DeepSeek-V3.1 |
+| 4-5 | GPT-4o, GPT-4.1, GPT-5, GPT-5.1, GPT-5.2, GPT-5.4, GPT-o3/o4-mini, Grok-4/4.1, Gemini-2.5-Pro, Gemini-3.1-Pro, Perplexity 系列 |
+| 7-8 | Grok-3, Claude-3.7-Sonnet, Claude-4-Sonnet, Claude-4.5-Sonnet (含 Thinking) |
+| 10-16 | Gemini-3.1-Pro-Thinking, GPT-5.1-Thinking, Claude-Opus-4.5/4.6 (含 Thinking), 图像模型 |
+| 35-45 | Claude-4-Opus (含 Thinking), Claude-Sonnet-4.6, 图像直连模型 |
+
+## API 鉴权
+
+设置 `AUTH_TOKEN` 后，所有接口（包括 `/v1/*` 代理接口）都需要鉴权：
+
+```bash
+# OpenAI 客户端标准方式
+curl http://localhost:10089/v1/chat/completions \
+  -H "Authorization: Bearer your-auth-token" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"model_25","messages":[{"role":"user","content":"hello"}]}'
+```
+
+也支持 query 参数 `?auth=your-auth-token` 或 session cookie（WebUI 登录后自动设置）。
+
+`AUTH_TOKEN` 为空时所有接口无需鉴权。
 
 ## WebUI 管理面板
 
@@ -185,17 +205,53 @@ rita2api/
 
 ## 使用示例
 
+### Chat Completions API
+
 ```bash
 # 非流式对话
 curl http://localhost:10089/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-auth-token" \
   -d '{"model":"model_25","messages":[{"role":"user","content":"你好"}]}'
 
 # 流式对话
 curl http://localhost:10089/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-auth-token" \
   -d '{"model":"model_25","messages":[{"role":"user","content":"你好"}],"stream":true}'
+```
 
+### Responses API
+
+```bash
+# 非流式
+curl http://localhost:10089/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-auth-token" \
+  -d '{"model":"model_25","input":"你好","instructions":"你是一个友好的助手"}'
+
+# 流式 (SSE)
+curl http://localhost:10089/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-auth-token" \
+  -d '{"model":"model_25","input":"你好","stream":true}'
+
+# 多轮对话 (message array)
+curl http://localhost:10089/v1/responses \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-auth-token" \
+  -d '{
+    "model":"model_25",
+    "instructions":"你是一个友好的助手",
+    "input":[
+      {"role":"user","content":"我叫小明"},
+      {"role":"assistant","content":"你好小明！"},
+      {"role":"user","content":"你还记得我叫什么吗？"}
+    ]
+  }'
+```
+
+```bash
 # 查看模型列表
 curl http://localhost:10089/v1/models
 ```

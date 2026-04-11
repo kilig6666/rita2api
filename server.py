@@ -59,14 +59,19 @@ def _check_auth() -> bool:
 @app.before_request
 def require_auth():
     path = request.path
-    # Always allow: root WebUI page and /v1/* (client-facing proxy)
-    if path == "/" or path.startswith("/v1/") or path == "/health":
+    # Always allow without auth
+    if path == "/" or path == "/health":
         return None
-    # Require auth for /api/* and /debug/*
+    # Allow login and auth-check endpoints
+    if path in ("/api/login", "/api/auth/check"):
+        return None
+    # /v1/* proxy endpoints: check Bearer token (OpenAI client style)
+    if path.startswith("/v1/"):
+        if AUTH_TOKEN and not _check_auth():
+            return jsonify({"error": {"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}}), 401
+        return None
+    # /api/* and /debug/*: require auth
     if path.startswith("/api/") or path.startswith("/debug/"):
-        # Allow the login and auth-check endpoints without auth
-        if path in ("/api/login", "/api/auth/check"):
-            return None
         if not _check_auth():
             return jsonify({"error": "Unauthorized", "auth_required": True}), 401
     return None
@@ -1200,6 +1205,289 @@ def chat_completions():
         return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
     except Exception as e:
         log(f"❌ Unexpected error: {e}", "ERROR")
+        import traceback; traceback.print_exc()
+        return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
+
+
+# =========================================================================
+#  OpenAI Responses API  (/v1/responses)
+# =========================================================================
+def _responses_parse_input(data: dict) -> list[dict]:
+    """Convert Responses API input to OpenAI messages format.
+    Handles: string input, array of {role, content}, and typed items.
+    """
+    raw_input = data.get("input", "")
+    instructions = data.get("instructions", "")
+    messages = []
+
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    if isinstance(raw_input, str):
+        messages.append({"role": "user", "content": raw_input})
+    elif isinstance(raw_input, list):
+        for item in raw_input:
+            if isinstance(item, str):
+                messages.append({"role": "user", "content": item})
+            elif isinstance(item, dict):
+                role = item.get("role", "user")
+                content = item.get("content", "")
+                item_type = item.get("type", "")
+                if item_type == "function_call_output":
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id", ""),
+                        "content": item.get("output", ""),
+                    })
+                elif role in ("user", "assistant", "system", "developer"):
+                    if role == "developer":
+                        role = "system"
+                    # content can be string or array of parts
+                    if isinstance(content, list):
+                        text_parts = []
+                        for part in content:
+                            if isinstance(part, dict):
+                                if part.get("type") == "input_text":
+                                    text_parts.append(part.get("text", ""))
+                                elif part.get("type") == "text":
+                                    text_parts.append(part.get("text", ""))
+                            elif isinstance(part, str):
+                                text_parts.append(part)
+                        content = "".join(text_parts)
+                    messages.append({"role": role, "content": content})
+    return messages
+
+
+def _responses_make_base(resp_id: str, model: str, created: float,
+                         instructions=None, status="completed") -> dict:
+    """Build the base response object shared by events and final response."""
+    return {
+        "id": resp_id,
+        "object": "response",
+        "created_at": created,
+        "status": status,
+        "model": model,
+        "output": [],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "max_output_tokens": None,
+        "truncation": "disabled",
+        "instructions": instructions,
+        "metadata": {},
+        "incomplete_details": None,
+        "error": None,
+        "usage": None,
+    }
+
+
+@app.route("/v1/responses", methods=["POST"])
+def responses_api():
+    """OpenAI Responses API compatible endpoint.
+    Accepts: model, input (str or array), instructions, stream, etc.
+    Returns: Responses API format (non-streaming JSON or streaming SSE).
+    """
+    data = request.json or {}
+    model = data.get("model", "model_25")
+    stream = data.get("stream", False)
+    instructions = data.get("instructions")
+
+    # Convert input to messages
+    messages = _responses_parse_input(data)
+    if not messages:
+        return jsonify({"error": {"message": "input is required", "type": "invalid_request_error"}}), 400
+
+    log(f"📥 /v1/responses model={model} stream={stream} msgs={len(messages)}", "INFO")
+    _increment_stats(model, messages)
+
+    acc, _ = acm.next()
+    if not acc:
+        return jsonify({"error": {"message": "no accounts configured", "type": "config_error"}}), 500
+
+    try:
+        rita_model = resolve_rita_model(model)
+        rita_messages = build_rita_messages(messages)
+        hdrs = acm.upstream_headers(acc, RITA_ORIGIN)
+
+        # Create conversation
+        chat_id = 0
+        try:
+            init_r = requests.post(
+                f"{UPSTREAM_URL}/chatgpt/newConversation",
+                headers=hdrs, json={"model": rita_model},
+                timeout=15, verify=not DISABLE_SSL_VERIFY,
+            )
+            init_data = init_r.json()
+            if init_data.get("code") == 0:
+                chat_id = init_data.get("data", {}).get("chat_id", 0)
+        except Exception:
+            pass
+
+        payload = {
+            "model": rita_model,
+            "messages": rita_messages,
+            "online": 0,
+            "model_type_id": 0,
+            "chat_id": chat_id,
+            "parent": "0",
+        }
+
+        resp = requests.post(
+            f"{UPSTREAM_URL}/aichat/completions",
+            headers=hdrs, json=payload, stream=True, timeout=120,
+            verify=not DISABLE_SSL_VERIFY,
+        )
+
+        # Check for JSON error
+        ct = resp.headers.get("content-type", "")
+        if "application/json" in ct:
+            try:
+                err = resp.json()
+                if err.get("code") and err["code"] != 0:
+                    acm.mark_fail(acc, str(err.get("error", err.get("message", ""))))
+                    return jsonify({"error": {"message": str(err.get("error", err.get("message", "upstream error"))), "type": "upstream_error"}}), 502
+            except Exception:
+                pass
+
+        acm.mark_ok(acc)
+        cost = get_cost(rita_model)
+        acm.deduct_quota(acc.id, cost)
+        db = get_db()
+        msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+        db.log_usage(acc.id, model, msg_chars // 4)
+
+        resp_id = f"resp_{int(time.time()*1000)}"
+        msg_id = f"msg_{int(time.time()*1000)}"
+        created = time.time()
+
+        if stream:
+            def gen_responses_stream():
+                seq = 0
+                full_text_parts = []
+                base = _responses_make_base(resp_id, model, created, instructions, "in_progress")
+
+                # Event 1: response.created
+                yield f"event: response.created\ndata: {json.dumps({'type':'response.created','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # Event 2: response.in_progress
+                yield f"event: response.in_progress\ndata: {json.dumps({'type':'response.in_progress','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # Event 3: output_item.added
+                item_skeleton = {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}
+                yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':0,'item':item_skeleton}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # Event 4: content_part.added
+                part_skeleton = {"type": "output_text", "text": "", "annotations": []}
+                yield f"event: response.content_part.added\ndata: {json.dumps({'type':'response.content_part.added','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'part':part_skeleton}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # Read SSE from upstream and emit text deltas
+                with resp:
+                    resp.encoding = "utf-8"
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if not line or not line.startswith("data: "):
+                            continue
+                        raw = line[6:]
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        etype = obj.get("type", "")
+                        if etype in ("quota_remain", "conv_title"):
+                            continue
+                        if etype == "assistant_complete":
+                            break
+                        choices = obj.get("choices", [])
+                        if choices:
+                            delta_content = choices[0].get("delta", {}).get("content", "")
+                            if delta_content:
+                                full_text_parts.append(delta_content)
+                                yield f"event: response.output_text.delta\ndata: {json.dumps({'type':'response.output_text.delta','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'delta':delta_content}, ensure_ascii=False)}\n\n"
+                                seq += 1
+
+                full_text = "".join(full_text_parts)
+
+                # output_text.done
+                yield f"event: response.output_text.done\ndata: {json.dumps({'type':'response.output_text.done','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'text':full_text}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # content_part.done
+                done_part = {"type": "output_text", "text": full_text, "annotations": []}
+                yield f"event: response.content_part.done\ndata: {json.dumps({'type':'response.content_part.done','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'part':done_part}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # output_item.done
+                done_item = {"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [done_part]}
+                yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':0,'item':done_item}, ensure_ascii=False)}\n\n"
+                seq += 1
+
+                # response.completed
+                usage = {"input_tokens": msg_chars // 4, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": len(full_text) // 4, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": (msg_chars + len(full_text)) // 4}
+                final = _responses_make_base(resp_id, model, created, instructions, "completed")
+                final["output"] = [done_item]
+                final["usage"] = usage
+                yield f"event: response.completed\ndata: {json.dumps({'type':'response.completed','sequence_number':seq,'response':final}, ensure_ascii=False)}\n\n"
+
+            return Response(gen_responses_stream(), mimetype="text/event-stream",
+                           headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+        else:
+            # Non-streaming: collect SSE content
+            content_parts = []
+            with resp:
+                resp.encoding = "utf-8"
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line or not line.startswith("data: "):
+                        continue
+                    raw = line[6:]
+                    if raw == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    etype = obj.get("type", "")
+                    if etype in ("quota_remain", "conv_title"):
+                        continue
+                    if etype == "assistant_complete":
+                        break
+                    choices = obj.get("choices", [])
+                    if choices:
+                        c = choices[0].get("delta", {}).get("content", "")
+                        if c:
+                            content_parts.append(c)
+
+            full_text = "".join(content_parts)
+            output_item = {
+                "id": msg_id, "type": "message", "role": "assistant", "status": "completed",
+                "content": [{"type": "output_text", "text": full_text, "annotations": []}],
+            }
+            usage = {
+                "input_tokens": msg_chars // 4,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": len(full_text) // 4,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": (msg_chars + len(full_text)) // 4,
+            }
+            result = _responses_make_base(resp_id, model, created, instructions, "completed")
+            result["output"] = [output_item]
+            result["usage"] = usage
+            return jsonify(result)
+
+    except requests.RequestException as e:
+        log(f"❌ Responses API error: {e}", "ERROR")
+        if acc:
+            acm.mark_fail(acc, str(e))
+        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
+    except Exception as e:
+        log(f"❌ Responses API unexpected error: {e}", "ERROR")
         import traceback; traceback.print_exc()
         return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
 
