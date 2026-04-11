@@ -4,11 +4,11 @@ auto_register.py — Rita.ai 自动注册 & Token 获取模块
 完整流程:
 1. 使用 GPTMail 创建临时邮箱
 2. 通过 accountapi.gosplit.net 注册 Rita.ai 账号
-3. 使用 YesCaptcha 解决 reCAPTCHA v2
+3. 使用 YesCaptcha 解决 reCAPTCHA Enterprise
 4. 等待邮箱验证码并提交
 5. 获取 token 并自动添加到 AccountManager
 
-依赖: pip install requests
+依赖: pip install requests curl_cffi
 外部服务: YesCaptcha (reCAPTCHA), GPTMail (临时邮箱)
 """
 
@@ -21,6 +21,13 @@ import string
 import requests
 import threading
 from pathlib import Path
+
+# curl_cffi for browser TLS fingerprint (anti-bot)
+try:
+    from curl_cffi import requests as curl_requests
+    _HAS_CURL_CFFI = True
+except ImportError:
+    _HAS_CURL_CFFI = False
 
 # ===================== Configuration =====================
 _DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
@@ -209,9 +216,98 @@ def _extract_code(content) -> str | None:
     return None
 
 
-# ===================== YesCaptcha — reCAPTCHA v2 Solver =====================
+# ===================== YesCaptcha — reCAPTCHA Enterprise Solver =====================
+
+# 任务类型优先级：Enterprise 优先，标准 V2 兜底
+_RECAPTCHA_TASK_TYPES = [
+    "RecaptchaV2EnterpriseTaskProxyless",  # 企业版 (Rita.ai 实际使用)
+    "NoCaptchaTaskProxyless",              # 标准 V2 兜底
+]
+
+
+def _solve_one_type(yescaptcha_key: str, task_type: str, ssl_verify: bool) -> str:
+    """用指定任务类型执行一次完整的 YesCaptcha 验证流程."""
+    task_payload = {
+        "type": task_type,
+        "websiteURL": RECAPTCHA_URL,
+        "websiteKey": RECAPTCHA_SITEKEY,
+    }
+
+    # reCAPTCHA Enterprise 需要额外参数 (from HAR 抓包)
+    if task_type == "RecaptchaV2EnterpriseTaskProxyless":
+        task_payload["enterprisePayload"] = {
+            "s": "ENTERPRISE",
+            "co": "aHR0cHM6Ly9hY2NvdW50LnJpdGEuYWk6NDQz",
+            "hl": "zh-CN",
+        }
+        task_payload["apiDomain"] = "https://www.google.com/recaptcha/enterprise.js"
+
+    # Create task
+    create_resp = requests.post(
+        f"{YESCAPTCHA_API}/createTask",
+        json={"clientKey": yescaptcha_key, "task": task_payload},
+        timeout=30,
+        verify=ssl_verify,
+    )
+    create_resp.raise_for_status()
+    create_data = create_resp.json()
+
+    if create_data.get("errorId", 0) != 0:
+        raise Exception(f"[{create_data.get('errorCode')}] {create_data.get('errorDescription', create_data)}")
+
+    task_id = create_data.get("taskId")
+    if not task_id:
+        raise Exception(f"YesCaptcha create failed: {create_data}")
+
+    _log(f"🔐 reCAPTCHA task created: {task_id} (type={task_type})", "DEBUG")
+
+    # Poll for result (max 120s, interval 1s)
+    for attempt in range(120):
+        time.sleep(1)
+        try:
+            result_resp = requests.post(
+                f"{YESCAPTCHA_API}/getTaskResult",
+                json={"clientKey": yescaptcha_key, "taskId": task_id},
+                timeout=15,
+                verify=ssl_verify,
+            )
+            result_resp.raise_for_status()
+            result_data = result_resp.json()
+
+            if result_data.get("errorId", 0) != 0:
+                raise Exception(f"[{result_data.get('errorCode')}] {result_data.get('errorDescription', result_data)}")
+
+            status = result_data.get("status", "")
+            if status == "ready":
+                solution = result_data.get("solution", {})
+                token = (
+                    solution.get("gRecaptchaResponse")
+                    or solution.get("g-recaptcha-response")
+                    or solution.get("token", "")
+                )
+                if token:
+                    _log(f"🔐 reCAPTCHA solved! ({len(token)} chars, {attempt + 1}s)", "DEBUG")
+                    return token
+                raise Exception(f"ready but no token: {result_data}")
+
+            if status == "failed":
+                raise Exception(f"YesCaptcha failed: {result_data}")
+
+            if attempt % 10 == 0:
+                _log(f"🔐 Waiting... status={status} ({attempt + 1}s)", "DEBUG")
+
+        except requests.RequestException as e:
+            if attempt % 10 == 0:
+                _log(f"🔐 Network error: {e} ({attempt + 1}s)", "DEBUG")
+
+    raise Exception(f"YesCaptcha timeout (120s) for {task_type}")
+
+
 def solve_recaptcha() -> str | None:
-    """Solve reCAPTCHA v2 via YesCaptcha. Returns g-recaptcha-response."""
+    """Solve reCAPTCHA Enterprise via YesCaptcha.
+    Tries Enterprise task type first, falls back to standard V2.
+    Returns g-recaptcha-response token.
+    """
     cfg = _get_live_config()
     yescaptcha_key = cfg["YESCAPTCHA_KEY"]
     ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
@@ -219,52 +315,62 @@ def solve_recaptcha() -> str | None:
     if not yescaptcha_key:
         raise Exception("YESCAPTCHA_KEY not configured")
 
-    # Create task
-    create_resp = requests.post(
-        f"{YESCAPTCHA_API}/createTask",
-        json={
-            "clientKey": yescaptcha_key,
-            "task": {
-                "type": "NoCaptchaTaskProxyless",
-                "websiteURL": RECAPTCHA_URL,
-                "websiteKey": RECAPTCHA_SITEKEY,
-            },
-        },
-        timeout=30,
-        verify=ssl_verify,
-    )
-    create_resp.raise_for_status()
-    create_data = create_resp.json()
-    task_id = create_data.get("taskId")
-    if not task_id:
-        raise Exception(f"YesCaptcha create failed: {create_data}")
+    last_error = None
+    for task_type in _RECAPTCHA_TASK_TYPES:
+        _log(f"🔐 Trying task type: {task_type}", "DEBUG")
+        try:
+            return _solve_one_type(yescaptcha_key, task_type, ssl_verify)
+        except Exception as e:
+            last_error = e
+            _log(f"🔐 {task_type} failed: {e}", "WARNING")
 
-    _log(f"🔐 reCAPTCHA task created: {task_id}", "DEBUG")
+    raise Exception(f"All YesCaptcha task types failed. Last error: {last_error}")
 
-    # Poll for result (max 120s)
-    for _ in range(40):
-        time.sleep(3)
-        result_resp = requests.post(
-            f"{YESCAPTCHA_API}/getTaskResult",
-            json={"clientKey": yescaptcha_key, "taskId": task_id},
-            timeout=15,
-            verify=ssl_verify,
-        )
-        result_resp.raise_for_status()
-        result_data = result_resp.json()
 
-        solution = result_data.get("solution", {})
-        if solution:
-            token = solution.get("gRecaptchaResponse")
-            if token:
-                _log("🔐 reCAPTCHA solved!", "DEBUG")
-                return token
+# ===================== Browser Fingerprint (anti-bot) =====================
+_CHROME_IMPERSONATE = "chrome120"
 
-        status = result_data.get("status", "")
-        if status == "failed":
-            raise Exception(f"YesCaptcha failed: {result_data}")
+_CHROME_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/120.0.6099.{patch} Safari/537.36"
+)
 
-    raise Exception("YesCaptcha timeout (120s)")
+_SEC_CH_UA = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"'
+
+_ACCEPT_LANGUAGES = [
+    "zh-CN,zh;q=0.9,en;q=0.8",
+    "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+    "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7",
+]
+
+
+def _random_browser_headers() -> dict:
+    """Generate Chrome-like browser headers to pass Rita anti-bot checks."""
+    patch = random.randint(109, 234)
+    ua = _CHROME_UA.format(patch=patch)
+    return {
+        "User-Agent": ua,
+        "Accept-Language": random.choice(_ACCEPT_LANGUAGES),
+        "sec-ch-ua": _SEC_CH_UA,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+    }
+
+
+def _create_rita_session(ssl_verify: bool = True):
+    """Create an HTTP session with browser TLS fingerprint.
+    Uses curl_cffi for Chrome TLS fingerprint if available, falls back to requests.
+    """
+    if _HAS_CURL_CFFI:
+        session = curl_requests.Session(impersonate=_CHROME_IMPERSONATE)
+        # curl_cffi doesn't use verify= in the same way, set it via env if needed
+        return session, _CHROME_IMPERSONATE
+    else:
+        _log("⚠️ curl_cffi not available, using plain requests (may be detected as bot)", "WARNING")
+        session = requests.Session()
+        session.verify = ssl_verify
+        return session, None
 
 
 # ===================== Rita.ai Registration Flow =====================
@@ -274,6 +380,7 @@ def _gosplit_headers():
         "Accept": "application/json, text/plain, */*",
         "Origin": "https://account.rita.ai",
         "Referer": "https://account.rita.ai/",
+        **_random_browser_headers(),
     }
 
 
@@ -317,15 +424,16 @@ def register_rita_account(email: str) -> dict:
     Raises: Exception on failure
     """
     cfg = _get_live_config()
-    session = requests.Session()
-    session.verify = not cfg["DISABLE_SSL_VERIFY"]
+    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
     headers = _gosplit_headers()
     redirect_uri = "https://www.rita.ai/zh/ai-chat"
 
     def _post(path, payload):
         """POST helper that auto-updates session headers from response."""
-        r = session.post(f"{GOSPLIT_API}{path}", headers=headers,
-                         json=payload, timeout=30)
+        kwargs = {"headers": headers, "json": payload, "timeout": 30}
+        if impersonate:
+            kwargs["impersonate"] = impersonate
+        r = session.post(f"{GOSPLIT_API}{path}", **kwargs)
         try:
             resp = r.json()
         except Exception:
@@ -482,6 +590,29 @@ def register_rita_account(email: str) -> dict:
         _post("/user/silent_edit", {"password": cfg["AUTO_REGISTER_PASSWORD"], "language": "zh"})
     except Exception:
         pass
+
+    # ---- Step 7: activate account on api_v2 via ticket ----
+    # The gosplit registration creates the account in the auth system, but
+    # api_v2.rita.ai (the chat API) needs a separate activation via ticket.
+    # In browser flow, this happens when redirected to www.rita.ai/zh/ai-chat?ticket=xxx
+    if ticket:
+        _log("Step 7: activating account on api_v2 via ticket...", "DEBUG")
+        try:
+            activate_resp = requests.get(
+                f"https://www.rita.ai/zh/ai-chat",
+                params={"ticket": ticket},
+                headers={
+                    **_random_browser_headers(),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    "Referer": "https://account.rita.ai/",
+                },
+                timeout=15,
+                allow_redirects=True,
+                verify=not cfg["DISABLE_SSL_VERIFY"],
+            )
+            _log(f"   activate status={activate_resp.status_code}", "DEBUG")
+        except Exception as e:
+            _log(f"   activate warning: {e}", "WARNING")
 
     _log(f"Registration complete! token={token[:8]}..., ticket={ticket[:8] if ticket else 'N/A'}...", "SUCCESS")
 
@@ -793,14 +924,19 @@ def refresh_account_token(email: str, password: str = "",
     Returns: {"token": "...", "email": "...", "ticket": "..."}
     """
     cfg = _get_live_config()
-    session = requests.Session()
-    session.verify = not cfg["DISABLE_SSL_VERIFY"]
+    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
     headers = _gosplit_headers()
     redirect_uri = "https://www.rita.ai/zh/ai-chat"
 
+    def _session_post(url, **kwargs):
+        """POST with optional impersonate for curl_cffi."""
+        if impersonate:
+            kwargs["impersonate"] = impersonate
+        return session.post(url, **kwargs)
+
     # Step 1: authenticate (init)
     _log(f"🔄 Refresh: authenticate (email={email})", "DEBUG")
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/authenticate",
         headers=headers,
         json={"redirect_uri": redirect_uri},
@@ -810,7 +946,7 @@ def refresh_account_token(email: str, password: str = "",
 
     # Step 2: sign_process (email + agree)
     _log("🔄 Refresh: sign_process", "DEBUG")
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/sign_process",
         headers=headers,
         json={"redirect_uri": redirect_uri, "language": "zh",
@@ -835,7 +971,7 @@ def refresh_account_token(email: str, password: str = "",
                 continue
 
             time.sleep(random.uniform(1.0, 2.0))
-            r = session.post(
+            r = _session_post(
                 f"{GOSPLIT_API}/authorize/sign_process",
                 headers=headers,
                 json={"redirect_uri": redirect_uri, "language": "zh",
@@ -853,7 +989,7 @@ def refresh_account_token(email: str, password: str = "",
     # Step 4: trigger emailCode
     _log("🔄 Refresh: sending verification email...", "INFO")
     try:
-        r = session.post(
+        r = _session_post(
             f"{GOSPLIT_API}/authorize/emailCode",
             headers=headers,
             json={"email": email, "redirect_uri": redirect_uri, "language": "zh",
@@ -871,7 +1007,7 @@ def refresh_account_token(email: str, password: str = "",
         if attempt > 0:
             _log(f"   📧 Resending verification email ({attempt}/{MAX_RESEND_ATTEMPTS})...", "INFO")
             try:
-                session.post(
+                _session_post(
                     f"{GOSPLIT_API}/authorize/emailCode",
                     headers=headers,
                     json={"email": email, "redirect_uri": redirect_uri, "language": "zh"},
@@ -890,7 +1026,7 @@ def refresh_account_token(email: str, password: str = "",
         raise Exception(f"Failed to receive verification code for {email}")
 
     _log(f"📧 Refresh: got code {code}", "DEBUG")
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/code_sign",
         headers=headers,
         json={"email": email, "code": code,
@@ -905,7 +1041,7 @@ def refresh_account_token(email: str, password: str = "",
         _log("   ⚠️ OTP verification failed, resending...", "WARNING")
         time.sleep(random.uniform(2.0, 4.0))
         try:
-            session.post(
+            _session_post(
                 f"{GOSPLIT_API}/authorize/emailCode",
                 headers=headers,
                 json={"email": email, "redirect_uri": redirect_uri, "language": "zh"},
@@ -916,7 +1052,7 @@ def refresh_account_token(email: str, password: str = "",
         time.sleep(random.uniform(2.0, 3.0))
         new_code = wait_for_code_by_provider(email, mail_provider, mail_api_key, timeout=OTP_WAIT_TIMEOUT)
         if new_code and new_code != code:
-            r = session.post(
+            r = _session_post(
                 f"{GOSPLIT_API}/authorize/code_sign",
                 headers=headers,
                 json={"email": email, "code": new_code,
@@ -932,7 +1068,10 @@ def refresh_account_token(email: str, password: str = "",
     # Extract token
     token = code_sign_data.get("data", {}).get("token", "")
     if not token:
-        token = session.cookies.get("token", "")
+        try:
+            token = session.cookies.get("token", "")
+        except Exception:
+            pass
     if not token:
         for cookie in r.cookies:
             if cookie.name == "token":
@@ -944,7 +1083,7 @@ def refresh_account_token(email: str, password: str = "",
     # Step 6: authenticate with new token
     _log("🔄 Refresh: authenticate (get ticket)", "DEBUG")
     auth_headers = {**headers, "token": token}
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/authenticate",
         headers=auth_headers,
         json={"redirect_uri": redirect_uri},
@@ -967,13 +1106,17 @@ def relogin_for_ticket(token: str) -> dict:
     Returns: {"ticket": "..."} or raises Exception
     """
     cfg = _get_live_config()
-    session = requests.Session()
-    session.verify = not cfg["DISABLE_SSL_VERIFY"]
+    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
     headers = _gosplit_headers()
     headers["token"] = token
 
+    def _session_post(url, **kwargs):
+        if impersonate:
+            kwargs["impersonate"] = impersonate
+        return session.post(url, **kwargs)
+
     # Step 1: authorize/url
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/url",
         headers=_gosplit_headers(),
         json={"login_url": "https://account.rita.ai", "source_url": "https://www.rita.ai"},
@@ -982,7 +1125,7 @@ def relogin_for_ticket(token: str) -> dict:
     r.raise_for_status()
 
     # Step 2: authenticate with token
-    r = session.post(
+    r = _session_post(
         f"{GOSPLIT_API}/authorize/authenticate",
         headers=headers,
         json={"redirect_uri": "https://www.rita.ai/zh/ai-chat"},
