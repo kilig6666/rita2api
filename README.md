@@ -1,4 +1,9 @@
 # rita2api
+<p align="center">
+  <a href="https://linux.do" target="_blank">
+    <img src="https://img.shields.io/badge/LINUX-DO-FFB003?style=for-the-badge&logo=linux&logoColor=white" alt="LINUX DO" />
+  </a>
+</p>
 
 OpenAI 兼容的 [Rita.ai](https://www.rita.ai) 反向代理，支持多账号轮换、自动注册补号、WebUI 管理面板。
 
