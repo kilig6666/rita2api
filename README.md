@@ -34,7 +34,8 @@ python server.py
 2. 设置 `AUTH_TOKEN`（管理面板密码，留空则无需登录）
 3. 打开 **账号管理** Tab → 添加账号（填入 Rita token）
 4. 或者打开 **账号注册** Tab → 配置 `YESCAPTCHA_KEY` + `GPTMAIL_API_KEY` → 点击手动注册
-
+5. 访问[YESCAPTCHA](https://yescaptcha.com/i/w9X0Ae)获取验证码解决方案
+6. 
 ## 架构
 
 ```
