@@ -39,10 +39,13 @@ def _load_config() -> dict:
         "gptmail_api_key": "gpt-test",
         "yydsmail_api_base": "https://maliapi.215.im/v1",
         "yydsmail_api_key": "",
+        "captcha_provider": "yescaptcha",
         "yescaptcha_client_key": "",
         "yescaptcha_website_key": "6Lej6N4hAAAAANgkiQRXxLrlue_J_y035Dm6UhPk",
         "yescaptcha_website_url": "https://account.rita.ai",
         "yescaptcha_task_type": "NoCaptchaTaskProxyless",
+        "ohmycaptcha_local_api_url": "http://127.0.0.1:8001",
+        "ohmycaptcha_local_key": "",
         "rita_account_api": "https://accountapi.gosplit.net",
         "rita_origin": "https://account.rita.ai",
         "rita_redirect_uri": "https://www.rita.ai/zh/ai-chat",
@@ -334,11 +337,43 @@ _RECAPTCHA_TASK_TYPES = [
     "RecaptchaV2EnterpriseTaskProxyless",  # 企业版 (需要完整参数)
     "NoCaptchaTaskProxyless",              # 标准 V2 兜底
 ]
+DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY = "ohmycaptcha-local-key"
+_RECAPTCHA_PROVIDER_LABELS = {
+    "yescaptcha": "YesCaptcha",
+    "ohmycaptcha_local": "OhMyCaptcha Local",
+}
+
+
+def normalize_recaptcha_provider(value: str = "") -> str:
+    provider = str(value or "").strip().lower()
+    if provider in {"ohmycaptcha", "ohmycaptcha-local", "ohmycaptcha_local"}:
+        return "ohmycaptcha_local"
+    return "yescaptcha"
+
+
+def _resolve_recaptcha_provider_config() -> dict:
+    provider = normalize_recaptcha_provider(CFG.get("captcha_provider", "yescaptcha"))
+    if provider == "ohmycaptcha_local":
+        api_url = str(CFG.get("ohmycaptcha_local_api_url") or "http://127.0.0.1:8001").strip() or "http://127.0.0.1:8001"
+        client_key = str(
+            CFG.get("ohmycaptcha_local_key")
+            or DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY
+        ).strip() or DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY
+    else:
+        provider = "yescaptcha"
+        api_url = "https://api.yescaptcha.com"
+        client_key = str(CFG.get("yescaptcha_client_key", "") or "").strip()
+    return {
+        "provider": provider,
+        "label": _RECAPTCHA_PROVIDER_LABELS.get(provider, provider),
+        "api_url": api_url.rstrip("/"),
+        "client_key": client_key,
+    }
 
 
 def solve_recaptcha(tag: str = "") -> str:
     """
-    用 YesCaptcha 过 reCAPTCHA Enterprise.
+    用当前配置的验证码服务过 reCAPTCHA Enterprise.
     返回 g-recaptcha-response token.
 
     HAR 解析出的完整参数:
@@ -349,7 +384,8 @@ def solve_recaptcha(tag: str = "") -> str:
 
     策略: 依次尝试多个任务类型，直到成功。确保每种类型都有足够的 API 调用次数。
     """
-    client_key = CFG.get("yescaptcha_client_key", "")
+    provider_cfg = _resolve_recaptcha_provider_config()
+    client_key = provider_cfg["client_key"]
     if not client_key:
         raise Exception("yescaptcha_client_key 未配置")
 
@@ -367,24 +403,33 @@ def solve_recaptcha(tag: str = "") -> str:
 
     last_error = None
     for task_type in task_types_to_try:
-        log(f"[YesCaptcha] 尝试任务类型: {task_type}", tag)
+        log(f"[{provider_cfg['label']}] 尝试任务类型: {task_type}", tag)
         try:
             token = _solve_one_type(
-                client_key, website_key, website_url, task_type, tag
+                provider_cfg, website_key, website_url, task_type, tag
             )
             return token
         except Exception as e:
             last_error = e
-            log(f"[YesCaptcha] {task_type} 失败: {e}", tag)
+            log(f"[{provider_cfg['label']}] {task_type} 失败: {e}", tag)
 
-    raise Exception(f"All YesCaptcha task types failed. Last error: {last_error}")
+    raise Exception(f"All {provider_cfg['label']} task types failed. Last error: {last_error}")
 
 
 def _solve_one_type(
-    client_key: str, website_key: str, website_url: str,
+    provider_cfg: dict, website_key: str, website_url: str,
     task_type: str, tag: str
 ) -> str:
-    """用指定任务类型执行一次完整的 YesCaptcha 验证流程."""
+    """用指定任务类型执行一次完整的打码流程."""
+    provider = str(provider_cfg.get("provider") or "yescaptcha").strip()
+    provider_label = str(provider_cfg.get("label") or provider).strip()
+    api_url = str(provider_cfg.get("api_url") or "").strip().rstrip("/")
+    client_key = str(provider_cfg.get("client_key") or "").strip()
+    request_kwargs = {"timeout": 30}
+    poll_request_kwargs = {"timeout": 15}
+    if CFG.get("proxy") and provider != "ohmycaptcha_local":
+        request_kwargs["proxies"] = {"http": CFG["proxy"], "https": CFG["proxy"]}
+        poll_request_kwargs["proxies"] = {"http": CFG["proxy"], "https": CFG["proxy"]}
 
     # 根据任务类型构造不同的 task payload
     task_payload = {
@@ -402,7 +447,7 @@ def _solve_one_type(
         }
         task_payload["apiDomain"] = "https://www.google.com/recaptcha/enterprise.js"
 
-    log(f"[YesCaptcha] 创建任务 (type={task_type})...", tag)
+    log(f"[{provider_label}] 创建任务 (type={task_type})...", tag)
 
     # Create task
     create_payload = {
@@ -410,12 +455,12 @@ def _solve_one_type(
         "task": task_payload,
     }
     r = stdlib_requests.post(
-        "https://api.yescaptcha.com/createTask",
+        f"{api_url}/createTask",
         json=create_payload,
-        timeout=30,
+        **request_kwargs,
     )
     result = r.json()
-    log(f"[YesCaptcha] createTask 响应: errorId={result.get('errorId', 0)} taskId={result.get('taskId', 'N/A')}", tag)
+    log(f"[{provider_label}] createTask 响应: errorId={result.get('errorId', 0)} taskId={result.get('taskId', 'N/A')}", tag)
 
     if result.get("errorId", 0) != 0:
         raise Exception(
@@ -432,9 +477,9 @@ def _solve_one_type(
         time.sleep(1)
         try:
             r = stdlib_requests.post(
-                "https://api.yescaptcha.com/getTaskResult",
+                f"{api_url}/getTaskResult",
                 json={"clientKey": client_key, "taskId": task_id},
-                timeout=15,
+                **poll_request_kwargs,
             )
             result = r.json()
 
@@ -454,20 +499,20 @@ def _solve_one_type(
                     solution.get("token", "")
                 )
                 if token:
-                    log(f"[YesCaptcha] OK ({len(token)} chars, {attempt + 1}s)", tag)
+                    log(f"[{provider_label}] OK ({len(token)} chars, {attempt + 1}s)", tag)
                     return token
                 else:
-                    log(f"[YesCaptcha] ready 但无 token, keys={list(solution.keys())}", tag)
+                    log(f"[{provider_label}] ready 但无 token, keys={list(solution.keys())}", tag)
                     raise Exception(f"ready 但无 token: {result}")
 
             if attempt % 10 == 0:
-                log(f"[YesCaptcha] 等待... status={status} ({attempt + 1}s)", tag)
+                log(f"[{provider_label}] 等待... status={status} ({attempt + 1}s)", tag)
 
         except stdlib_requests.RequestException as e:
             if attempt % 10 == 0:
-                log(f"[YesCaptcha] 网络错误: {e} ({attempt + 1}s)", tag)
+                log(f"[{provider_label}] 网络错误: {e} ({attempt + 1}s)", tag)
 
-    raise Exception(f"YesCaptcha {task_type} 超时 ({max_attempts}s)")
+    raise Exception(f"{provider_label} {task_type} 超时 ({max_attempts}s)")
 
 
 # ===================== Rita Registration =====================
@@ -846,12 +891,14 @@ def run_batch():
     print(f"  数量: {total} | 并发: {max_workers}")
     print(f"  邮箱: {CFG.get('mail_provider', 'gptmail')}")
     print(f"  代理: {proxy or '无'}{' (邮箱也走代理)' if proxy and CFG.get('mail_use_proxy') else ''}")
-    print(f"  验证码: YesCaptcha ({'[OK]' if CFG.get('yescaptcha_client_key') else '[MISSING]'})")
+    captcha_cfg = _resolve_recaptcha_provider_config()
+    captcha_ok = bool(captcha_cfg.get("client_key"))
+    print(f"  验证码: {captcha_cfg['label']} ({'[OK]' if captcha_ok else '[MISSING]'})")
     print(f"  上传: {'[OK] ' + CFG.get('upload_api_url', '') if upload_enabled else '[SKIP]'}")
     print("=" * 60 + "\n")
 
-    if not CFG.get("yescaptcha_client_key"):
-        print("[WARN] 警告: yescaptcha_client_key 未配置，注册将失败!")
+    if not captcha_ok:
+        print("[WARN] 警告: 当前打码服务未配置，注册将失败!")
         input("按 Enter 继续...")
 
     success_count = 0

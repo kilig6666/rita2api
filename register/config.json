@@ -14,11 +14,14 @@
     "yydsmail_api_base": "https://maliapi.215.im/v1",
     "yydsmail_api_key": "AC-556562fc24a6adf7d0eeb32e",
 
-    "_comment_captcha": "YesCaptcha reCAPTCHA Enterprise",
+    "_comment_captcha": "验证码服务: yescaptcha 或 ohmycaptcha_local",
+    "captcha_provider": "yescaptcha",
     "yescaptcha_client_key": "638159964e9b9eda7b2b31408ab6502c4d4f28a0101853",
     "yescaptcha_website_key": "6Lej6N4hAAAAANgkiQRXxLrlue_J_y035Dm6UhPk",
     "yescaptcha_website_url": "https://account.rita.ai",
     "yescaptcha_task_type": "NoCaptchaTaskProxyless",
+    "ohmycaptcha_local_api_url": "http://127.0.0.1:8001",
+    "ohmycaptcha_local_key": "ohmycaptcha-local-key",
 
     "_comment_rita": "Rita 注册 API",
     "rita_account_api": "https://accountapi.gosplit.net",

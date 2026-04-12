@@ -35,6 +35,10 @@ _DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
 # YesCaptcha config
 YESCAPTCHA_KEY = os.getenv("YESCAPTCHA_KEY", "")
 YESCAPTCHA_API = "https://api.yescaptcha.com"
+DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY = "ohmycaptcha-local-key"
+CAPTCHA_PROVIDER = os.getenv("CAPTCHA_PROVIDER", "yescaptcha")
+OHMYCAPTCHA_LOCAL_API_URL = os.getenv("OHMYCAPTCHA_LOCAL_API_URL", "http://127.0.0.1:8001")
+OHMYCAPTCHA_LOCAL_KEY = os.getenv("OHMYCAPTCHA_LOCAL_KEY", "")
 
 # GPTMail config
 GPTMAIL_API_KEY = os.getenv("GPTMAIL_API_KEY", "")
@@ -43,6 +47,13 @@ GPTMAIL_API_BASE = os.getenv("GPTMAIL_API_BASE", "https://mail.chatgpt.org.uk")
 # YYDS Mail config
 YYDSMAIL_API_KEY = os.getenv("YYDSMAIL_API_KEY", "")
 YYDSMAIL_API_BASE = os.getenv("YYDSMAIL_API_BASE", "https://maliapi.215.im/v1")
+
+# MoeMail config
+MOEMAIL_API_KEY = os.getenv("MOEMAIL_API_KEY", "")
+MOEMAIL_API_BASE = os.getenv("MOEMAIL_API_BASE", "")
+MAIL_PROVIDER_DEFAULT = os.getenv("MAIL_PROVIDER_DEFAULT", "gptmail")
+REGISTER_PROXY = os.getenv("REGISTER_PROXY", "")
+MAIL_USE_PROXY = os.getenv("MAIL_USE_PROXY", "0") == "1"
 
 # Rita.ai reCAPTCHA v2 sitekey (from account.rita.ai JS bundle)
 RECAPTCHA_SITEKEY = "6Lej6N4hAAAAANgkiQRXxLrlue_J_y035Dm6UhPk"
@@ -67,6 +78,132 @@ def _log(msg, level="INFO"):
         print(f"[AutoRegister] {msg}")
 
 
+def _normalize_proxy_value(value: str = "") -> str:
+    proxy = str(value or "").strip()
+    if not proxy:
+        return ""
+    if "://" in proxy:
+        return proxy
+    return f"http://{proxy}"
+
+
+def _build_http_proxies(proxy: str = "") -> dict | None:
+    proxy_url = _normalize_proxy_value(proxy)
+    if not proxy_url:
+        return None
+    return {"http": proxy_url, "https": proxy_url}
+
+
+def _http_get(url: str, *, proxy: str = "", **kwargs):
+    proxies = _build_http_proxies(proxy)
+    if proxies:
+        kwargs.setdefault("proxies", proxies)
+    return requests.get(url, **kwargs)
+
+
+def _http_post(url: str, *, proxy: str = "", **kwargs):
+    proxies = _build_http_proxies(proxy)
+    if proxies:
+        kwargs.setdefault("proxies", proxies)
+    return requests.post(url, **kwargs)
+
+
+def _normalize_mail_provider(value: str = "") -> str:
+    provider = str(value or "").strip().lower()
+    if provider in {"gptmail", "yydsmail", "moemail"}:
+        return provider
+    fallback = str(MAIL_PROVIDER_DEFAULT or "gptmail").strip().lower()
+    return fallback if fallback in {"gptmail", "yydsmail", "moemail"} else "gptmail"
+
+
+def _parse_mail_api_payload(mail_provider: str, raw_value: str = "", cfg: dict | None = None) -> dict:
+    provider = _normalize_mail_provider(mail_provider)
+    raw_text = str(raw_value or "").strip()
+    payload = {}
+    if raw_text.startswith("{"):
+        try:
+            loaded = json.loads(raw_text)
+            if isinstance(loaded, dict):
+                payload = loaded
+        except Exception:
+            payload = {}
+    elif raw_text:
+        payload = {"api_key": raw_text}
+
+    live_cfg = cfg or _get_live_config()
+    if provider == "gptmail":
+        payload.setdefault("api_key", raw_text or live_cfg.get("GPTMAIL_API_KEY", ""))
+        payload.setdefault("api_base", live_cfg.get("GPTMAIL_API_BASE", ""))
+    elif provider == "yydsmail":
+        payload.setdefault("api_key", live_cfg.get("YYDSMAIL_API_KEY", ""))
+        payload.setdefault("api_base", live_cfg.get("YYDSMAIL_API_BASE", ""))
+        payload.setdefault("auth_credential", str(payload.get("token") or payload.get("auth_credential") or "").strip())
+    elif provider == "moemail":
+        payload.setdefault("api_key", live_cfg.get("MOEMAIL_API_KEY", ""))
+        payload.setdefault("api_base", live_cfg.get("MOEMAIL_API_BASE", ""))
+        payload.setdefault("auth_credential", str(payload.get("mailbox_id") or payload.get("auth_credential") or "").strip())
+    return payload
+
+
+def _serialize_mail_api_payload(mail_provider: str, payload: dict | None = None) -> str:
+    provider = _normalize_mail_provider(mail_provider)
+    if provider == "gptmail":
+        return str((payload or {}).get("api_key") or "").strip()
+    safe_payload = {k: v for k, v in (payload or {}).items() if v not in (None, "")}
+    return json.dumps(safe_payload, ensure_ascii=False) if safe_payload else ""
+
+
+def _get_default_mail_provider(cfg: dict | None = None) -> str:
+    live_cfg = cfg or _get_live_config()
+    return _normalize_mail_provider(live_cfg.get("MAIL_PROVIDER_DEFAULT"))
+
+
+def _resolve_register_proxy(cfg: dict | None = None) -> str:
+    live_cfg = cfg or _get_live_config()
+    return _normalize_proxy_value(live_cfg.get("REGISTER_PROXY"))
+
+
+def _mail_should_use_proxy(cfg: dict | None = None) -> bool:
+    live_cfg = cfg or _get_live_config()
+    value = live_cfg.get("MAIL_USE_PROXY", False)
+    return value is True or str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_mail_proxy(cfg: dict | None = None) -> str:
+    live_cfg = cfg or _get_live_config()
+    return _resolve_register_proxy(live_cfg) if _mail_should_use_proxy(live_cfg) else ""
+
+
+def _is_mail_provider_configured(mail_provider: str, cfg: dict | None = None) -> bool:
+    live_cfg = cfg or _get_live_config()
+    provider = _normalize_mail_provider(mail_provider)
+    if provider == "gptmail":
+        return bool(live_cfg.get("GPTMAIL_API_KEY"))
+    if provider == "yydsmail":
+        return bool(live_cfg.get("YYDSMAIL_API_KEY"))
+    if provider == "moemail":
+        return bool(live_cfg.get("MOEMAIL_API_KEY") and live_cfg.get("MOEMAIL_API_BASE"))
+    return False
+
+
+def _get_mail_provider_missing_keys(mail_provider: str, cfg: dict | None = None) -> list[str]:
+    live_cfg = cfg or _get_live_config()
+    provider = _normalize_mail_provider(mail_provider)
+    missing = []
+    if provider == "gptmail":
+        if not live_cfg.get("GPTMAIL_API_KEY"):
+            missing.append("GPTMAIL_API_KEY")
+    elif provider == "yydsmail":
+        if not live_cfg.get("YYDSMAIL_API_KEY"):
+            missing.append("YYDSMAIL_API_KEY")
+    elif provider == "moemail":
+        if not live_cfg.get("MOEMAIL_API_KEY"):
+            missing.append("MOEMAIL_API_KEY")
+        if not live_cfg.get("MOEMAIL_API_BASE"):
+            missing.append("MOEMAIL_API_BASE")
+    return missing
+
+
 # ===================== Live Config (DB > env) =====================
 def _get_live_config() -> dict:
     """Read config from database first, fallback to module-level env vars."""
@@ -75,10 +212,18 @@ def _get_live_config() -> dict:
         db = get_db()
         return {
             "YESCAPTCHA_KEY": db.get_config("YESCAPTCHA_KEY") or YESCAPTCHA_KEY,
+            "CAPTCHA_PROVIDER": db.get_config("CAPTCHA_PROVIDER") or CAPTCHA_PROVIDER,
+            "OHMYCAPTCHA_LOCAL_API_URL": db.get_config("OHMYCAPTCHA_LOCAL_API_URL") or OHMYCAPTCHA_LOCAL_API_URL,
+            "OHMYCAPTCHA_LOCAL_KEY": db.get_config("OHMYCAPTCHA_LOCAL_KEY") or OHMYCAPTCHA_LOCAL_KEY,
+            "MAIL_PROVIDER_DEFAULT": db.get_config("MAIL_PROVIDER_DEFAULT") or MAIL_PROVIDER_DEFAULT,
             "GPTMAIL_API_KEY": db.get_config("GPTMAIL_API_KEY") or GPTMAIL_API_KEY,
             "GPTMAIL_API_BASE": db.get_config("GPTMAIL_API_BASE") or GPTMAIL_API_BASE,
             "YYDSMAIL_API_KEY": db.get_config("YYDSMAIL_API_KEY") or YYDSMAIL_API_KEY,
             "YYDSMAIL_API_BASE": db.get_config("YYDSMAIL_API_BASE") or YYDSMAIL_API_BASE,
+            "MOEMAIL_API_KEY": db.get_config("MOEMAIL_API_KEY") or MOEMAIL_API_KEY,
+            "MOEMAIL_API_BASE": db.get_config("MOEMAIL_API_BASE") or MOEMAIL_API_BASE,
+            "REGISTER_PROXY": db.get_config("REGISTER_PROXY") or REGISTER_PROXY,
+            "MAIL_USE_PROXY": db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY,
             "AUTO_REGISTER_ENABLED": db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED,
             "AUTO_REGISTER_MIN_ACTIVE": int(db.get_config("AUTO_REGISTER_MIN_ACTIVE") or AUTO_REGISTER_MIN_ACTIVE),
             "AUTO_REGISTER_BATCH": int(db.get_config("AUTO_REGISTER_BATCH") or AUTO_REGISTER_BATCH),
@@ -88,10 +233,18 @@ def _get_live_config() -> dict:
     except Exception:
         return {
             "YESCAPTCHA_KEY": YESCAPTCHA_KEY,
+            "CAPTCHA_PROVIDER": CAPTCHA_PROVIDER,
+            "OHMYCAPTCHA_LOCAL_API_URL": OHMYCAPTCHA_LOCAL_API_URL,
+            "OHMYCAPTCHA_LOCAL_KEY": OHMYCAPTCHA_LOCAL_KEY,
+            "MAIL_PROVIDER_DEFAULT": MAIL_PROVIDER_DEFAULT,
             "GPTMAIL_API_KEY": GPTMAIL_API_KEY,
             "GPTMAIL_API_BASE": GPTMAIL_API_BASE,
             "YYDSMAIL_API_KEY": YYDSMAIL_API_KEY,
             "YYDSMAIL_API_BASE": YYDSMAIL_API_BASE,
+            "MOEMAIL_API_KEY": MOEMAIL_API_KEY,
+            "MOEMAIL_API_BASE": MOEMAIL_API_BASE,
+            "REGISTER_PROXY": REGISTER_PROXY,
+            "MAIL_USE_PROXY": MAIL_USE_PROXY,
             "AUTO_REGISTER_ENABLED": AUTO_REGISTER_ENABLED,
             "AUTO_REGISTER_MIN_ACTIVE": AUTO_REGISTER_MIN_ACTIVE,
             "AUTO_REGISTER_BATCH": AUTO_REGISTER_BATCH,
@@ -109,34 +262,136 @@ def _gptmail_headers(api_key=""):
     return h
 
 
-def create_temp_email() -> tuple[str, None]:
-    """Create a temporary email via GPTMail. Returns email address."""
+def create_temp_email(mail_provider: str = "") -> str:
+    """Create a temporary email via the selected provider. Returns email address."""
+    mailbox = create_temp_email_by_provider(mail_provider or _get_default_mail_provider())
+    return str(mailbox.get("email") or "")
+
+
+def _gptmail_get_detail(api_base, headers, mail_id, ssl_verify):
+    """Fetch a single email's detail from GPTMail. Returns parsed dict or None."""
     cfg = _get_live_config()
-    resp = requests.post(
+    try:
+        r = _http_get(
+            f"{api_base}/api/email/{mail_id}",
+            headers=headers,
+            timeout=15,
+            verify=ssl_verify,
+            proxy=_resolve_mail_proxy(cfg),
+        )
+        return r.json() if r.status_code == 200 else None
+    except Exception:
+        return None
+
+
+def _moemail_headers(api_key: str = "") -> dict:
+    cfg = _get_live_config()
+    key = api_key or cfg["MOEMAIL_API_KEY"]
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["X-API-Key"] = key
+    return headers
+
+
+def _moemail_get_domain(api_base: str, headers: dict, ssl_verify: bool) -> str:
+    cfg = _get_live_config()
+    resp = _http_get(
+        f"{api_base.rstrip('/')}/api/config",
+        headers=headers,
+        timeout=10,
+        verify=ssl_verify,
+        proxy=_resolve_mail_proxy(cfg),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    domains_str = str(data.get("emailDomains") or "").strip()
+    domains = [item.strip() for item in domains_str.split(",") if item.strip()]
+    if not domains:
+        raise Exception("MoeMail create failed: no domains available")
+    return random.choice(domains)
+
+
+def _moemail_create_email(api_key: str = "", api_base: str = "") -> tuple[str, str]:
+    cfg = _get_live_config()
+    base = str(api_base or cfg["MOEMAIL_API_BASE"] or "").strip().rstrip("/")
+    if not base:
+        raise Exception("MOEMAIL_API_BASE not configured")
+    headers = _moemail_headers(api_key)
+    ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
+    domain = _moemail_get_domain(base, headers, ssl_verify)
+    prefix = "".join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(8, 13)))
+    resp = _http_post(
+        f"{base}/api/emails/generate",
+        json={"name": prefix, "domain": domain, "expiryTime": 0},
+        headers=headers,
+        timeout=15,
+        verify=ssl_verify,
+        proxy=_resolve_mail_proxy(cfg),
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    email = str(data.get("email") or "").strip()
+    auth_credential = str(data.get("id") or "").strip()
+    if not email or not auth_credential:
+        raise Exception(f"MoeMail create failed: {data}")
+    return email, auth_credential
+
+
+def create_temp_email_by_provider(mail_provider: str = "") -> dict:
+    cfg = _get_live_config()
+    provider = _normalize_mail_provider(mail_provider or cfg.get("MAIL_PROVIDER_DEFAULT"))
+    if provider == "yydsmail":
+        email, auth_credential = _yydsmail_create_email()
+        payload = {
+            "api_key": cfg["YYDSMAIL_API_KEY"],
+            "api_base": cfg["YYDSMAIL_API_BASE"],
+            "auth_credential": auth_credential,
+        }
+        return {
+            "email": email,
+            "auth_credential": auth_credential,
+            "mail_provider": "yydsmail",
+            "mail_api_key": _serialize_mail_api_payload("yydsmail", payload),
+            "channel_label": "YYDSMail",
+            "api_base": cfg["YYDSMAIL_API_BASE"],
+        }
+    if provider == "moemail":
+        email, auth_credential = _moemail_create_email()
+        payload = {
+            "api_key": cfg["MOEMAIL_API_KEY"],
+            "api_base": cfg["MOEMAIL_API_BASE"],
+            "auth_credential": auth_credential,
+        }
+        return {
+            "email": email,
+            "auth_credential": auth_credential,
+            "mail_provider": "moemail",
+            "mail_api_key": _serialize_mail_api_payload("moemail", payload),
+            "channel_label": "MoeMail",
+            "api_base": cfg["MOEMAIL_API_BASE"],
+        }
+
+    resp = _http_post(
         f"{cfg['GPTMAIL_API_BASE']}/api/generate-email",
         headers=_gptmail_headers(cfg["GPTMAIL_API_KEY"]),
         json={},
         timeout=15,
         verify=not cfg["DISABLE_SSL_VERIFY"],
+        proxy=_resolve_mail_proxy(cfg),
     )
     resp.raise_for_status()
     data = resp.json()
     if not data.get("success"):
         raise Exception(f"GPTMail create failed: {data}")
-    email = data["data"]["email"]
-    return email
-
-
-def _gptmail_get_detail(api_base, headers, mail_id, ssl_verify):
-    """Fetch a single email's detail from GPTMail. Returns parsed dict or None."""
-    try:
-        r = requests.get(
-            f"{api_base}/api/email/{mail_id}",
-            headers=headers, timeout=15, verify=ssl_verify,
-        )
-        return r.json() if r.status_code == 200 else None
-    except Exception:
-        return None
+    email = str(data["data"]["email"]).strip()
+    return {
+        "email": email,
+        "auth_credential": "",
+        "mail_provider": "gptmail",
+        "mail_api_key": _serialize_mail_api_payload("gptmail", {"api_key": cfg["GPTMAIL_API_KEY"]}),
+        "channel_label": "GPTMail",
+        "api_base": cfg["GPTMAIL_API_BASE"],
+    }
 
 
 def wait_for_verification_code(email: str, timeout: int = 120) -> str | None:
@@ -151,10 +406,13 @@ def wait_for_verification_code(email: str, timeout: int = 120) -> str | None:
     start = time.time()
     while time.time() - start < timeout:
         try:
-            resp = requests.get(
+            resp = _http_get(
                 f"{api_base}/api/emails",
                 params={"email": email},
-                headers=hdrs, timeout=15, verify=ssl_verify,
+                headers=hdrs,
+                timeout=15,
+                verify=ssl_verify,
+                proxy=_resolve_mail_proxy(cfg),
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -225,8 +483,62 @@ _RECAPTCHA_TASK_TYPES = [
 ]
 
 
-def _solve_one_type(yescaptcha_key: str, task_type: str, ssl_verify: bool) -> str:
-    """用指定任务类型执行一次完整的 YesCaptcha 验证流程."""
+_RECAPTCHA_PROVIDER_LABELS = {
+    "yescaptcha": "YesCaptcha",
+    "ohmycaptcha_local": "OhMyCaptcha Local",
+}
+
+
+def normalize_recaptcha_provider(value: str = "") -> str:
+    provider = str(value or "").strip().lower()
+    if provider in {"ohmycaptcha", "ohmycaptcha-local", "ohmycaptcha_local"}:
+        return "ohmycaptcha_local"
+    return "yescaptcha"
+
+
+def _resolve_recaptcha_provider_config(cfg: dict | None = None, provider_override: str = "") -> dict:
+    live_cfg = cfg or _get_live_config()
+    provider = normalize_recaptcha_provider(provider_override or live_cfg.get("CAPTCHA_PROVIDER"))
+    if provider == "ohmycaptcha_local":
+        api_url = str(
+            live_cfg.get("OHMYCAPTCHA_LOCAL_API_URL")
+            or OHMYCAPTCHA_LOCAL_API_URL
+            or "http://127.0.0.1:8001"
+        ).strip() or "http://127.0.0.1:8001"
+        client_key = str(
+            live_cfg.get("OHMYCAPTCHA_LOCAL_KEY")
+            or OHMYCAPTCHA_LOCAL_KEY
+            or DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY
+        ).strip() or DEFAULT_OHMYCAPTCHA_LOCAL_CLIENT_KEY
+    else:
+        provider = "yescaptcha"
+        api_url = YESCAPTCHA_API
+        client_key = str(live_cfg.get("YESCAPTCHA_KEY") or YESCAPTCHA_KEY).strip()
+    return {
+        "provider": provider,
+        "label": _RECAPTCHA_PROVIDER_LABELS.get(provider, provider),
+        "api_url": api_url.rstrip("/"),
+        "client_key": client_key,
+    }
+
+
+def _solve_one_type(provider_cfg: dict, task_type: str, ssl_verify: bool) -> str:
+    """用指定 provider + task_type 执行一次完整的 reCAPTCHA 验证流程."""
+    cfg = _get_live_config()
+    provider = str(provider_cfg.get("provider") or "yescaptcha").strip()
+    provider_label = str(provider_cfg.get("label") or provider).strip()
+    api_url = str(provider_cfg.get("api_url") or "").strip().rstrip("/")
+    client_key = str(provider_cfg.get("client_key") or "").strip()
+
+    if not api_url:
+        raise Exception(f"{provider_label} API URL 未配置")
+    if not client_key:
+        if provider == "yescaptcha":
+            raise Exception("YESCAPTCHA_KEY not configured")
+        raise Exception(f"{provider_label} client key 未配置")
+
+    # 本地打码默认不走 Rita 注册代理，避免 127.0.0.1 被错误转发到外部代理。
+    register_proxy = "" if provider == "ohmycaptcha_local" else _resolve_register_proxy(cfg)
     task_payload = {
         "type": task_type,
         "websiteURL": RECAPTCHA_URL,
@@ -243,11 +555,12 @@ def _solve_one_type(yescaptcha_key: str, task_type: str, ssl_verify: bool) -> st
         task_payload["apiDomain"] = "https://www.google.com/recaptcha/enterprise.js"
 
     # Create task
-    create_resp = requests.post(
-        f"{YESCAPTCHA_API}/createTask",
-        json={"clientKey": yescaptcha_key, "task": task_payload},
+    create_resp = _http_post(
+        f"{api_url}/createTask",
+        json={"clientKey": client_key, "task": task_payload},
         timeout=30,
         verify=ssl_verify,
+        proxy=register_proxy,
     )
     create_resp.raise_for_status()
     create_data = create_resp.json()
@@ -257,19 +570,20 @@ def _solve_one_type(yescaptcha_key: str, task_type: str, ssl_verify: bool) -> st
 
     task_id = create_data.get("taskId")
     if not task_id:
-        raise Exception(f"YesCaptcha create failed: {create_data}")
+        raise Exception(f"{provider_label} createTask failed: {create_data}")
 
-    _log(f"🔐 reCAPTCHA task created: {task_id} (type={task_type})", "DEBUG")
+    _log(f"🔐 {provider_label} reCAPTCHA task created: {task_id} (type={task_type})", "DEBUG")
 
     # Poll for result (max 120s, interval 1s)
     for attempt in range(120):
         time.sleep(1)
         try:
-            result_resp = requests.post(
-                f"{YESCAPTCHA_API}/getTaskResult",
-                json={"clientKey": yescaptcha_key, "taskId": task_id},
+            result_resp = _http_post(
+                f"{api_url}/getTaskResult",
+                json={"clientKey": client_key, "taskId": task_id},
                 timeout=15,
                 verify=ssl_verify,
+                proxy=register_proxy,
             )
             result_resp.raise_for_status()
             result_data = result_resp.json()
@@ -286,45 +600,42 @@ def _solve_one_type(yescaptcha_key: str, task_type: str, ssl_verify: bool) -> st
                     or solution.get("token", "")
                 )
                 if token:
-                    _log(f"🔐 reCAPTCHA solved! ({len(token)} chars, {attempt + 1}s)", "DEBUG")
+                    _log(f"🔐 {provider_label} reCAPTCHA solved! ({len(token)} chars, {attempt + 1}s)", "DEBUG")
                     return token
                 raise Exception(f"ready but no token: {result_data}")
 
             if status == "failed":
-                raise Exception(f"YesCaptcha failed: {result_data}")
+                raise Exception(f"{provider_label} failed: {result_data}")
 
             if attempt % 10 == 0:
-                _log(f"🔐 Waiting... status={status} ({attempt + 1}s)", "DEBUG")
+                _log(f"🔐 {provider_label} waiting... status={status} ({attempt + 1}s)", "DEBUG")
 
         except requests.RequestException as e:
             if attempt % 10 == 0:
-                _log(f"🔐 Network error: {e} ({attempt + 1}s)", "DEBUG")
+                _log(f"🔐 {provider_label} network error: {e} ({attempt + 1}s)", "DEBUG")
 
-    raise Exception(f"YesCaptcha timeout (120s) for {task_type}")
+    raise Exception(f"{provider_label} timeout (120s) for {task_type}")
 
 
-def solve_recaptcha() -> str | None:
-    """Solve reCAPTCHA Enterprise via YesCaptcha.
+def solve_recaptcha(provider_override: str = "") -> str | None:
+    """Solve reCAPTCHA Enterprise via selected provider.
     Tries Enterprise task type first, falls back to standard V2.
     Returns g-recaptcha-response token.
     """
     cfg = _get_live_config()
-    yescaptcha_key = cfg["YESCAPTCHA_KEY"]
+    provider_cfg = _resolve_recaptcha_provider_config(cfg, provider_override)
     ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
-
-    if not yescaptcha_key:
-        raise Exception("YESCAPTCHA_KEY not configured")
 
     last_error = None
     for task_type in _RECAPTCHA_TASK_TYPES:
-        _log(f"🔐 Trying task type: {task_type}", "DEBUG")
+        _log(f"🔐 Trying {provider_cfg['label']} task type: {task_type}", "DEBUG")
         try:
-            return _solve_one_type(yescaptcha_key, task_type, ssl_verify)
+            return _solve_one_type(provider_cfg, task_type, ssl_verify)
         except Exception as e:
             last_error = e
-            _log(f"🔐 {task_type} failed: {e}", "WARNING")
+            _log(f"🔐 {provider_cfg['label']} {task_type} failed: {e}", "WARNING")
 
-    raise Exception(f"All YesCaptcha task types failed. Last error: {last_error}")
+    raise Exception(f"All {provider_cfg['label']} task types failed. Last error: {last_error}")
 
 
 # ===================== Browser Fingerprint (anti-bot) =====================
@@ -358,18 +669,29 @@ def _random_browser_headers() -> dict:
     }
 
 
-def _create_rita_session(ssl_verify: bool = True):
+def _create_rita_session(ssl_verify: bool = True, proxy: str = ""):
     """Create an HTTP session with browser TLS fingerprint.
     Uses curl_cffi for Chrome TLS fingerprint if available, falls back to requests.
     """
+    proxies = _build_http_proxies(proxy)
     if _HAS_CURL_CFFI:
-        session = curl_requests.Session(impersonate=_CHROME_IMPERSONATE)
-        # curl_cffi doesn't use verify= in the same way, set it via env if needed
+        session = curl_requests.Session(impersonate=_CHROME_IMPERSONATE, proxies=proxies)
+        try:
+            session.verify = ssl_verify
+        except Exception:
+            pass
+        try:
+            session.trust_env = False
+        except Exception:
+            pass
         return session, _CHROME_IMPERSONATE
     else:
         _log("⚠️ curl_cffi not available, using plain requests (may be detected as bot)", "WARNING")
         session = requests.Session()
         session.verify = ssl_verify
+        session.trust_env = False
+        if proxies:
+            session.proxies = proxies
         return session, None
 
 
@@ -414,7 +736,12 @@ OTP_WAIT_TIMEOUT = 90         # 每轮 OTP 等待超时（秒）
 OTP_POLL_INTERVAL = 3         # OTP 轮询间隔（秒）
 
 
-def register_rita_account(email: str) -> dict:
+def register_rita_account(
+    email: str,
+    mail_provider: str = "",
+    mail_api_key: str = "",
+    captcha_provider_override: str = "",
+) -> dict:
     """
     Full registration flow for Rita.ai.
     Key: tracks session token/visitorid from each response and passes
@@ -424,7 +751,11 @@ def register_rita_account(email: str) -> dict:
     Raises: Exception on failure
     """
     cfg = _get_live_config()
-    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
+    register_proxy = _resolve_register_proxy(cfg)
+    session, impersonate = _create_rita_session(
+        ssl_verify=not cfg["DISABLE_SSL_VERIFY"],
+        proxy=register_proxy,
+    )
     headers = _gosplit_headers()
     redirect_uri = "https://www.rita.ai/zh/ai-chat"
 
@@ -466,7 +797,7 @@ def register_rita_account(email: str) -> dict:
 
             _log(f"Step 3/6: solving reCAPTCHA (attempt {cap_attempt})...", "INFO")
             try:
-                captcha_token = solve_recaptcha()
+                captcha_token = solve_recaptcha(captcha_provider_override)
             except Exception as e:
                 _log(f"   reCAPTCHA solve error: {e}", "WARNING")
                 if cap_attempt >= MAX_CAPTCHA_ATTEMPTS:
@@ -527,7 +858,12 @@ def register_rita_account(email: str) -> dict:
             _log(f"   resend code={resp.get('code', '?')}", "DEBUG")
             time.sleep(random.uniform(2.0, 4.0))
 
-        otp_code = wait_for_verification_code(email, timeout=OTP_WAIT_TIMEOUT)
+        otp_code = wait_for_code_by_provider(
+            email,
+            mail_provider=mail_provider,
+            mail_api_key=mail_api_key,
+            timeout=OTP_WAIT_TIMEOUT,
+        )
         if otp_code:
             _log(f"   Got OTP: {otp_code}", "DEBUG")
             break
@@ -551,7 +887,12 @@ def register_rita_account(email: str) -> dict:
         })
         time.sleep(random.uniform(3.0, 5.0))
 
-        new_code = wait_for_verification_code(email, timeout=OTP_WAIT_TIMEOUT)
+        new_code = wait_for_code_by_provider(
+            email,
+            mail_provider=mail_provider,
+            mail_api_key=mail_api_key,
+            timeout=OTP_WAIT_TIMEOUT,
+        )
         if new_code and new_code != otp_code:
             _log(f"   New OTP: {new_code}, re-submitting...", "DEBUG")
             resp, r = _post("/authorize/code_sign", {
@@ -598,7 +939,7 @@ def register_rita_account(email: str) -> dict:
     if ticket:
         _log("Step 7: activating account on api_v2 via ticket...", "DEBUG")
         try:
-            activate_resp = requests.get(
+            activate_resp = _http_get(
                 f"https://www.rita.ai/zh/ai-chat",
                 params={"ticket": ticket},
                 headers={
@@ -609,6 +950,7 @@ def register_rita_account(email: str) -> dict:
                 timeout=15,
                 allow_redirects=True,
                 verify=not cfg["DISABLE_SSL_VERIFY"],
+                proxy=register_proxy,
             )
             _log(f"   activate status={activate_resp.status_code}", "DEBUG")
         except Exception as e:
@@ -620,7 +962,7 @@ def register_rita_account(email: str) -> dict:
 
 
 # ===================== Orchestrator =====================
-def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict | None:
+def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_provider_override: str = "") -> dict | None:
     """
     Register one new Rita.ai account and optionally add it to AccountManager.
 
@@ -628,14 +970,34 @@ def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict 
     """
     cfg = _get_live_config()
     try:
+        selected_provider = _get_default_mail_provider(cfg)
+        captcha_cfg = _resolve_recaptcha_provider_config(cfg, captcha_provider_override)
+        register_proxy = _resolve_register_proxy(cfg)
+        mail_proxy = _resolve_mail_proxy(cfg)
+        if register_proxy:
+            _log(f"🌐 当前注册代理: {register_proxy}", "INFO")
+        else:
+            _log("🌐 当前注册按直连执行", "INFO")
+        _log(f"🧩 当前打码服务: {captcha_cfg['label']} ({captcha_cfg['provider']})", "INFO")
+        if mail_proxy:
+            _log(f"📧 邮箱请求复用注册代理: {mail_proxy}", "INFO")
+        else:
+            _log("📧 邮箱请求按直连执行", "DEBUG")
+
         # 1. Create temp email
-        _log("🔄 Creating temporary email...", "INFO")
-        email = create_temp_email()
+        _log(f"🔄 Creating temporary email via {selected_provider}...", "INFO")
+        mailbox = create_temp_email_by_provider(selected_provider)
+        email = str(mailbox.get("email") or "").strip()
         _log(f"📧 Email: {email}", "INFO")
 
         # 2. Register
         _log("🔄 Starting registration...", "INFO")
-        result = register_rita_account(email)
+        result = register_rita_account(
+            email,
+            mail_provider=selected_provider,
+            mail_api_key=str(mailbox.get("mail_api_key") or "").strip(),
+            captcha_provider_override=captcha_cfg["provider"],
+        )
         token = result["token"]
 
         # 3. Add to AccountManager
@@ -645,7 +1007,8 @@ def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict 
             acc = account_manager.add(
                 token=token, name=f"auto-{name_part}",
                 email=email, password=cfg["AUTO_REGISTER_PASSWORD"],
-                mail_provider="gptmail", mail_api_key=cfg["GPTMAIL_API_KEY"],
+                mail_provider=selected_provider,
+                mail_api_key=str(mailbox.get("mail_api_key") or "").strip(),
             )
             account_id = acc.id
             _log(f"➕ Account added: {acc.name} ({acc.id})", "SUCCESS")
@@ -658,7 +1021,13 @@ def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict 
                 else:
                     _log(f"⚠️ Token test failed: {test}", "WARNING")
 
-        return {"token": token, "email": email, "account_id": account_id}
+        return {
+            "token": token,
+            "email": email,
+            "account_id": account_id,
+            "mail_provider": selected_provider,
+            "captcha_provider": captcha_cfg["provider"],
+        }
 
     except Exception as e:
         _log(f"❌ Auto-register failed: {e}", "ERROR")
@@ -666,12 +1035,12 @@ def auto_register_one(account_manager=None, upstream_url="", origin="") -> dict 
 
 
 def auto_register_batch(count: int = 1, account_manager=None,
-                        upstream_url="", origin="") -> list[dict]:
+                        upstream_url="", origin="", captcha_provider_override: str = "") -> list[dict]:
     """Register multiple accounts. Returns list of results."""
     results = []
     for i in range(count):
         _log(f"📋 Registering account {i+1}/{count}...", "INFO")
-        result = auto_register_one(account_manager, upstream_url, origin)
+        result = auto_register_one(account_manager, upstream_url, origin, captcha_provider_override)
         if result:
             results.append(result)
         # Delay between registrations
@@ -703,12 +1072,16 @@ def start_auto_replenish(account_manager, upstream_url: str, origin: str,
         _log("⏸ Auto-register disabled (set AUTO_REGISTER_ENABLED=1 to enable)", "INFO")
         return
 
-    if not cfg["YESCAPTCHA_KEY"]:
-        _log("⚠️ Auto-register disabled: YESCAPTCHA_KEY not set", "WARNING")
+    captcha_cfg = _resolve_recaptcha_provider_config(cfg)
+    if not captcha_cfg["client_key"]:
+        _log(f"⚠️ Auto-register disabled: {captcha_cfg['label']} 未配置", "WARNING")
         return
+    _log(f"🧩 Auto-register captcha provider: {captcha_cfg['label']} ({captcha_cfg['provider']})", "INFO")
 
-    if not cfg["GPTMAIL_API_KEY"] and not cfg["YYDSMAIL_API_KEY"]:
-        _log("⚠️ Auto-register disabled: no mail API key set", "WARNING")
+    selected_provider = _get_default_mail_provider(cfg)
+    if not _is_mail_provider_configured(selected_provider, cfg):
+        missing = _get_mail_provider_missing_keys(selected_provider, cfg)
+        _log(f"⚠️ Auto-register disabled: missing mail config for {selected_provider}: {', '.join(missing)}", "WARNING")
         return
 
     def loop():
@@ -744,7 +1117,7 @@ def start_auto_replenish(account_manager, upstream_url: str, origin: str,
 
 
 # ===================== Config Check =====================
-def check_config() -> dict:
+def check_config(captcha_provider_override: str = "") -> dict:
     """Check if auto-register dependencies are configured.
     Reads from database for live config, falls back to module-level env vars.
     """
@@ -752,35 +1125,103 @@ def check_config() -> dict:
         from database import get_db
         db = get_db()
         yescaptcha_key = db.get_config("YESCAPTCHA_KEY") or YESCAPTCHA_KEY
+        captcha_provider = db.get_config("CAPTCHA_PROVIDER") or CAPTCHA_PROVIDER
+        ohmycaptcha_local_api_url = db.get_config("OHMYCAPTCHA_LOCAL_API_URL") or OHMYCAPTCHA_LOCAL_API_URL
+        ohmycaptcha_local_key = db.get_config("OHMYCAPTCHA_LOCAL_KEY") or OHMYCAPTCHA_LOCAL_KEY
+        default_provider = db.get_config("MAIL_PROVIDER_DEFAULT") or MAIL_PROVIDER_DEFAULT
         gptmail_key = db.get_config("GPTMAIL_API_KEY") or GPTMAIL_API_KEY
         gptmail_base = db.get_config("GPTMAIL_API_BASE") or GPTMAIL_API_BASE
         yydsmail_key = db.get_config("YYDSMAIL_API_KEY") or YYDSMAIL_API_KEY
         yydsmail_base = db.get_config("YYDSMAIL_API_BASE") or YYDSMAIL_API_BASE
+        moemail_key = db.get_config("MOEMAIL_API_KEY") or MOEMAIL_API_KEY
+        moemail_base = db.get_config("MOEMAIL_API_BASE") or MOEMAIL_API_BASE
+        register_proxy = db.get_config("REGISTER_PROXY") or REGISTER_PROXY
+        mail_use_proxy = db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY
         auto_enabled = db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED
         min_active = int(db.get_config("AUTO_REGISTER_MIN_ACTIVE") or AUTO_REGISTER_MIN_ACTIVE)
         batch_size = int(db.get_config("AUTO_REGISTER_BATCH") or AUTO_REGISTER_BATCH)
     except Exception:
         # Fallback to env vars if DB is unavailable
         yescaptcha_key = YESCAPTCHA_KEY
+        captcha_provider = CAPTCHA_PROVIDER
+        ohmycaptcha_local_api_url = OHMYCAPTCHA_LOCAL_API_URL
+        ohmycaptcha_local_key = OHMYCAPTCHA_LOCAL_KEY
+        default_provider = MAIL_PROVIDER_DEFAULT
         gptmail_key = GPTMAIL_API_KEY
         gptmail_base = GPTMAIL_API_BASE
         yydsmail_key = YYDSMAIL_API_KEY
         yydsmail_base = YYDSMAIL_API_BASE
+        moemail_key = MOEMAIL_API_KEY
+        moemail_base = MOEMAIL_API_BASE
+        register_proxy = REGISTER_PROXY
+        mail_use_proxy = MAIL_USE_PROXY
         auto_enabled = AUTO_REGISTER_ENABLED
         min_active = AUTO_REGISTER_MIN_ACTIVE
         batch_size = AUTO_REGISTER_BATCH
 
+    provider = _normalize_mail_provider(default_provider)
+    recaptcha_provider_cfg = _resolve_recaptcha_provider_config({
+        "CAPTCHA_PROVIDER": captcha_provider,
+        "YESCAPTCHA_KEY": yescaptcha_key,
+        "OHMYCAPTCHA_LOCAL_API_URL": ohmycaptcha_local_api_url,
+        "OHMYCAPTCHA_LOCAL_KEY": ohmycaptcha_local_key,
+    }, captcha_provider_override)
+    captcha_missing = []
+    if recaptcha_provider_cfg["provider"] == "yescaptcha":
+        if not recaptcha_provider_cfg["client_key"]:
+            captcha_missing.append("YESCAPTCHA_KEY")
+    elif not recaptcha_provider_cfg["api_url"]:
+        captcha_missing.append("OHMYCAPTCHA_LOCAL_API_URL")
+
+    provider_cfg = {
+        "gptmail": {"GPTMAIL_API_KEY": gptmail_key, "GPTMAIL_API_BASE": gptmail_base},
+        "yydsmail": {"YYDSMAIL_API_KEY": yydsmail_key, "YYDSMAIL_API_BASE": yydsmail_base},
+        "moemail": {"MOEMAIL_API_KEY": moemail_key, "MOEMAIL_API_BASE": moemail_base},
+    }
+    provider_ready = _is_mail_provider_configured(provider, {
+        **provider_cfg.get(provider, {}),
+        "GPTMAIL_API_KEY": gptmail_key,
+        "GPTMAIL_API_BASE": gptmail_base,
+        "YYDSMAIL_API_KEY": yydsmail_key,
+        "YYDSMAIL_API_BASE": yydsmail_base,
+        "MOEMAIL_API_KEY": moemail_key,
+        "MOEMAIL_API_BASE": moemail_base,
+    })
+    provider_missing = _get_mail_provider_missing_keys(provider, {
+        "GPTMAIL_API_KEY": gptmail_key,
+        "GPTMAIL_API_BASE": gptmail_base,
+        "YYDSMAIL_API_KEY": yydsmail_key,
+        "YYDSMAIL_API_BASE": yydsmail_base,
+        "MOEMAIL_API_KEY": moemail_key,
+        "MOEMAIL_API_BASE": moemail_base,
+    })
+
     return {
         "auto_register_enabled": auto_enabled,
         "yescaptcha_configured": bool(yescaptcha_key),
+        "captcha_provider": recaptcha_provider_cfg["provider"],
+        "captcha_provider_label": recaptcha_provider_cfg["label"],
+        "captcha_api_url": recaptcha_provider_cfg["api_url"],
+        "captcha_missing": captcha_missing,
+        "captcha_configured": not captcha_missing and bool(recaptcha_provider_cfg["client_key"] and recaptcha_provider_cfg["api_url"]),
+        "ohmycaptcha_local_configured": bool(ohmycaptcha_local_api_url),
+        "ohmycaptcha_local_api_url": ohmycaptcha_local_api_url or "http://127.0.0.1:8001",
+        "mail_provider_default": provider,
+        "mail_provider_configured": provider_ready,
+        "mail_provider_missing": provider_missing,
         "gptmail_configured": bool(gptmail_key),
         "gptmail_api_base": gptmail_base,
         "yydsmail_configured": bool(yydsmail_key),
         "yydsmail_api_base": yydsmail_base,
+        "moemail_configured": bool(moemail_key and moemail_base),
+        "moemail_api_base": moemail_base,
+        "register_proxy": _normalize_proxy_value(register_proxy),
+        "register_proxy_configured": bool(_normalize_proxy_value(register_proxy)),
+        "mail_use_proxy": bool(mail_use_proxy),
         "recaptcha_sitekey": RECAPTCHA_SITEKEY,
         "min_active_accounts": min_active,
         "batch_size": batch_size,
-        "ready": bool(yescaptcha_key and (gptmail_key or yydsmail_key)),
+        "ready": bool((not captcha_missing) and bool(recaptcha_provider_cfg["client_key"]) and provider_ready),
     }
 
 
@@ -794,6 +1235,7 @@ def _yydsmail_create_email(api_key: str = "") -> tuple[str, str]:
     key = api_key or cfg["YYDSMAIL_API_KEY"]
     api_base = cfg["YYDSMAIL_API_BASE"]
     ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
+    mail_proxy = _resolve_mail_proxy(cfg)
 
     if not key:
         raise Exception("YYDSMAIL_API_KEY not configured")
@@ -804,8 +1246,13 @@ def _yydsmail_create_email(api_key: str = "") -> tuple[str, str]:
     # Fetch available domains
     domains = []
     try:
-        r = requests.get(f"{api_base}/domains", headers=headers,
-                         timeout=15, verify=ssl_verify)
+        r = _http_get(
+            f"{api_base}/domains",
+            headers=headers,
+            timeout=15,
+            verify=ssl_verify,
+            proxy=mail_proxy,
+        )
         if r.status_code == 200:
             raw = r.json()
             data = raw if isinstance(raw, list) else raw.get("data", [])
@@ -821,11 +1268,12 @@ def _yydsmail_create_email(api_key: str = "") -> tuple[str, str]:
     prefix = "".join(random.choices(string.ascii_lowercase + string.digits,
                                     k=random.randint(8, 12)))
 
-    r = requests.post(
+    r = _http_post(
         f"{api_base}/accounts",
         headers=headers,
         json={"address": prefix, "domain": domain},
         timeout=15, verify=ssl_verify,
+        proxy=mail_proxy,
     )
     if r.status_code not in (200, 201):
         raise Exception(f"YYDS Mail create failed: {r.status_code} {r.text[:200]}")
@@ -848,22 +1296,27 @@ def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
     Falls back to api_key as Bearer if no mail_token.
     """
     cfg = _get_live_config()
-    bearer = mail_token or mail_api_key or cfg["YYDSMAIL_API_KEY"]
+    payload = _parse_mail_api_payload("yydsmail", mail_api_key, cfg)
+    bearer = mail_token or payload.get("auth_credential") or payload.get("api_key") or cfg["YYDSMAIL_API_KEY"]
     if not bearer:
         _log("⚠️ YYDS Mail: no token/key for message query", "WARNING")
         return None
 
     ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
-    api_base = cfg["YYDSMAIL_API_BASE"]
+    api_base = str(payload.get("api_base") or cfg["YYDSMAIL_API_BASE"]).rstrip("/")
+    mail_proxy = _resolve_mail_proxy(cfg)
     headers = {"Accept": "application/json",
                "Authorization": f"Bearer {bearer}"}
 
     start = time.time()
     while time.time() - start < timeout:
         try:
-            resp = requests.get(
+            resp = _http_get(
                 f"{api_base}/messages",
-                headers=headers, timeout=15, verify=ssl_verify,
+                headers=headers,
+                timeout=15,
+                verify=ssl_verify,
+                proxy=mail_proxy,
             )
             if resp.status_code == 200:
                 raw = resp.json()
@@ -878,9 +1331,12 @@ def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
                         continue
                     # Fetch detail
                     try:
-                        dr = requests.get(
+                        dr = _http_get(
                             f"{api_base}/messages/{msg_id}",
-                            headers=headers, timeout=15, verify=ssl_verify,
+                            headers=headers,
+                            timeout=15,
+                            verify=ssl_verify,
+                            proxy=mail_proxy,
                         )
                         if dr.status_code == 200:
                             detail = dr.json()
@@ -901,14 +1357,77 @@ def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
     return None
 
 
+def _moemail_wait_for_code(email: str, mail_api_key: str = "", timeout: int = 120) -> str | None:
+    cfg = _get_live_config()
+    payload = _parse_mail_api_payload("moemail", mail_api_key, cfg)
+    api_key = str(payload.get("api_key") or "").strip()
+    api_base = str(payload.get("api_base") or cfg["MOEMAIL_API_BASE"] or "").strip().rstrip("/")
+    auth_credential = str(payload.get("auth_credential") or "").strip()
+    if not api_key or not api_base:
+        _log("⚠️ MoeMail: missing API key or base URL", "WARNING")
+        return None
+    if not auth_credential:
+        _log(f"⚠️ MoeMail: mailbox credential missing for {email}", "WARNING")
+        return None
+
+    ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
+    mail_proxy = _resolve_mail_proxy(cfg)
+    headers = _moemail_headers(api_key)
+    start = time.time()
+    seen_ids = set()
+    while time.time() - start < timeout:
+        try:
+            resp = _http_get(
+                f"{api_base}/api/emails/{auth_credential}",
+                headers=headers,
+                timeout=15,
+                verify=ssl_verify,
+                proxy=mail_proxy,
+            )
+            if resp.status_code == 200:
+                messages = resp.json().get("messages") or []
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    msg_id = str(msg.get("id") or "").strip()
+                    if not msg_id or msg_id in seen_ids:
+                        continue
+                    detail_resp = _http_get(
+                        f"{api_base}/api/emails/{auth_credential}/{msg_id}",
+                        headers=headers,
+                        timeout=15,
+                        verify=ssl_verify,
+                        proxy=mail_proxy,
+                    )
+                    if detail_resp.status_code != 200:
+                        continue
+                    seen_ids.add(msg_id)
+                    detail = detail_resp.json()
+                    msg_obj = detail.get("message") if isinstance(detail.get("message"), dict) else {}
+                    content = msg_obj.get("content") or msg_obj.get("html") or detail.get("text") or detail.get("html") or ""
+                    code = _extract_code(content)
+                    if code:
+                        return code
+        except Exception as e:
+            _log(f"📧 MoeMail poll error: {e}", "DEBUG")
+
+        elapsed = int(time.time() - start)
+        _log(f"📧 MoeMail waiting... ({elapsed}s/{timeout}s)", "DEBUG")
+        time.sleep(OTP_POLL_INTERVAL)
+
+    return None
+
+
 def wait_for_code_by_provider(email: str, mail_provider: str = "",
                               mail_api_key: str = "",
                               timeout: int = 120) -> str | None:
     """Wait for verification code using the appropriate mail provider."""
-    provider = (mail_provider or "gptmail").lower().strip()
+    provider = _normalize_mail_provider(mail_provider or _get_default_mail_provider())
 
     if provider == "yydsmail":
         return _yydsmail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout)
+    if provider == "moemail":
+        return _moemail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout)
     else:
         # Default to GPTMail
         return wait_for_verification_code(email, timeout)
@@ -924,7 +1443,11 @@ def refresh_account_token(email: str, password: str = "",
     Returns: {"token": "...", "email": "...", "ticket": "..."}
     """
     cfg = _get_live_config()
-    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
+    register_proxy = _resolve_register_proxy(cfg)
+    session, impersonate = _create_rita_session(
+        ssl_verify=not cfg["DISABLE_SSL_VERIFY"],
+        proxy=register_proxy,
+    )
     headers = _gosplit_headers()
     redirect_uri = "https://www.rita.ai/zh/ai-chat"
 
@@ -1106,7 +1629,11 @@ def relogin_for_ticket(token: str) -> dict:
     Returns: {"ticket": "..."} or raises Exception
     """
     cfg = _get_live_config()
-    session, impersonate = _create_rita_session(ssl_verify=not cfg["DISABLE_SSL_VERIFY"])
+    register_proxy = _resolve_register_proxy(cfg)
+    session, impersonate = _create_rita_session(
+        ssl_verify=not cfg["DISABLE_SSL_VERIFY"],
+        proxy=register_proxy,
+    )
     headers = _gosplit_headers()
     headers["token"] = token
 

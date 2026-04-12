@@ -60,9 +60,16 @@ def migrate():
         "DISABLE_SSL_VERIFY": os.getenv("DISABLE_SSL_VERIFY", ""),
         "HEALTH_CHECK_INTERVAL": os.getenv("HEALTH_CHECK_INTERVAL", ""),
         "AUTO_REGISTER_ENABLED": os.getenv("AUTO_REGISTER_ENABLED", ""),
+        "REGISTER_PROXY": os.getenv("REGISTER_PROXY", ""),
+        "MAIL_USE_PROXY": os.getenv("MAIL_USE_PROXY", ""),
         "YESCAPTCHA_KEY": os.getenv("YESCAPTCHA_KEY", ""),
+        "MAIL_PROVIDER_DEFAULT": os.getenv("MAIL_PROVIDER_DEFAULT", ""),
         "GPTMAIL_API_KEY": os.getenv("GPTMAIL_API_KEY", ""),
+        "GPTMAIL_API_BASE": os.getenv("GPTMAIL_API_BASE", ""),
         "YYDSMAIL_API_KEY": os.getenv("YYDSMAIL_API_KEY", ""),
+        "YYDSMAIL_API_BASE": os.getenv("YYDSMAIL_API_BASE", ""),
+        "MOEMAIL_API_KEY": os.getenv("MOEMAIL_API_KEY", ""),
+        "MOEMAIL_API_BASE": os.getenv("MOEMAIL_API_BASE", ""),
     }
     for key, val in env_mappings.items():
         if val:  # Only override if .env has a non-empty value

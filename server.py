@@ -32,7 +32,7 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "10089"))
 # Disable SSL verification for api_v2.rita.ai (hostname mismatch in upstream cert)
 DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
-AUTH_TOKEN = os.getenv("AUTH_TOKEN", "")
+AUTH_TOKEN = os.getenv("AUTH_TOKEN", "981115")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24).hex())
@@ -40,19 +40,31 @@ acm = AccountManager()
 _conv_lock = Lock()
 
 # ===================== Auth Middleware =====================
+def _get_auth_token() -> str:
+    """实时读取面板/API密码，优先数据库配置，回退环境变量默认值。"""
+    try:
+        row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("AUTH_TOKEN",))
+        if row is not None:
+            return str(row["value"] or "").strip()
+    except Exception:
+        pass
+    return str(AUTH_TOKEN or "").strip()
+
+
 def _check_auth() -> bool:
     """Return True if the request is authenticated (or auth is disabled)."""
-    if not AUTH_TOKEN:
+    auth_token = _get_auth_token()
+    if not auth_token:
         return True
     # Check Authorization header
     auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer ") and auth_header[7:] == AUTH_TOKEN:
+    if auth_header.startswith("Bearer ") and auth_header[7:] == auth_token:
         return True
     # Check query param
-    if request.args.get("auth") == AUTH_TOKEN:
+    if request.args.get("auth") == auth_token:
         return True
     # Check session cookie
-    if session.get("auth_token") == AUTH_TOKEN:
+    if session.get("auth_token") == auth_token:
         return True
     return False
 
@@ -67,7 +79,7 @@ def require_auth():
         return None
     # /v1/* proxy endpoints: check Bearer token (OpenAI client style)
     if path.startswith("/v1/"):
-        if AUTH_TOKEN and not _check_auth():
+        if _get_auth_token() and not _check_auth():
             return jsonify({"error": {"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}}), 401
         return None
     # /api/* and /debug/*: require auth
@@ -309,18 +321,20 @@ def webui():
 def api_login():
     data = request.json or {}
     token = data.get("token", "").strip()
-    if not AUTH_TOKEN:
+    current_auth_token = _get_auth_token()
+    if not current_auth_token:
         # No auth configured — always succeed
         return jsonify({"ok": True, "auth_required": False})
-    if token == AUTH_TOKEN:
-        session["auth_token"] = AUTH_TOKEN
+    if token == current_auth_token:
+        session["auth_token"] = current_auth_token
         return jsonify({"ok": True, "auth_required": True})
     return jsonify({"ok": False, "error": "Invalid token"}), 401
 
 @app.route("/api/auth/check", methods=["GET"])
 def api_auth_check():
+    current_auth_token = _get_auth_token()
     return jsonify({
-        "auth_required": bool(AUTH_TOKEN),
+        "auth_required": bool(current_auth_token),
         "authenticated": _check_auth(),
     })
 
@@ -603,6 +617,7 @@ def api_check_mail_code():
     """Query the latest verification code for an email address.
     Body: { "email": "...", "mail_provider": "gptmail", "mail_api_key": "..." }
     Or:   { "account_id": "abc123" }  — looks up email/provider from account
+    注意: moemail 的 mail_api_key 可为自动注册生成的 JSON 凭据。
     """
     data = request.json or {}
     account_id = data.get("account_id", "").strip()
@@ -618,13 +633,13 @@ def api_check_mail_code():
         if not acc.email:
             return jsonify({"ok": False, "error": "account has no email set"}), 400
         email = acc.email
-        mail_provider = mail_provider or acc.mail_provider or "gptmail"
+        mail_provider = mail_provider or acc.mail_provider or get_db().get_config("MAIL_PROVIDER_DEFAULT", "gptmail")
         mail_api_key = mail_api_key or acc.mail_api_key or ""
 
     if not email:
         return jsonify({"error": "email or account_id is required"}), 400
 
-    mail_provider = mail_provider or "gptmail"
+    mail_provider = mail_provider or get_db().get_config("MAIL_PROVIDER_DEFAULT", "gptmail") or "gptmail"
 
     try:
         code = auto_register.wait_for_code_by_provider(
@@ -657,6 +672,7 @@ def api_mail_status():
     """Return mail service configuration status."""
     db = get_db()
     return jsonify({
+        "default_provider": db.get_config("MAIL_PROVIDER_DEFAULT", "gptmail") or "gptmail",
         "gptmail": {
             "configured": bool(db.get_config("GPTMAIL_API_KEY")),
             "api_base": db.get_config("GPTMAIL_API_BASE", "https://mail.chatgpt.org.uk"),
@@ -664,6 +680,10 @@ def api_mail_status():
         "yydsmail": {
             "configured": bool(db.get_config("YYDSMAIL_API_KEY")),
             "api_base": db.get_config("YYDSMAIL_API_BASE", "https://maliapi.215.im/v1"),
+        },
+        "moemail": {
+            "configured": bool(db.get_config("MOEMAIL_API_KEY") and db.get_config("MOEMAIL_API_BASE")),
+            "api_base": db.get_config("MOEMAIL_API_BASE", ""),
         },
     })
 
@@ -741,31 +761,43 @@ def api_auto_register():
     """
     data = request.json or {}
     count = min(data.get("count", 1), 5)  # Max 5 at a time
+    captcha_provider = str(data.get("captcha_provider") or "").strip()
 
-    config = auto_register.check_config()
+    config = auto_register.check_config(captcha_provider)
     if not config["ready"]:
-        missing = []
-        if not config["yescaptcha_configured"]:
-            missing.append("YESCAPTCHA_KEY")
-        if not config["gptmail_configured"]:
-            missing.append("GPTMAIL_API_KEY")
+        missing = list(config.get("mail_provider_missing") or [])
+        for item in config.get("captcha_missing") or []:
+            if item not in missing:
+                missing.insert(0, item)
         return jsonify({
             "error": f"Auto-register not configured. Missing: {', '.join(missing)}",
             "config": config,
         }), 400
 
-    log(f"🔄 Manual auto-register triggered: {count} account(s)", "INFO")
-    results = auto_register.auto_register_batch(
-        count=count,
-        account_manager=acm,
-        upstream_url=UPSTREAM_URL,
-        origin=RITA_ORIGIN,
+    log(
+        f"🔄 Manual auto-register triggered: {count} account(s), captcha={config.get('captcha_provider')}",
+        "INFO",
     )
+    try:
+        results = auto_register.auto_register_batch(
+            count=count,
+            account_manager=acm,
+            upstream_url=UPSTREAM_URL,
+            origin=RITA_ORIGIN,
+            captcha_provider_override=captcha_provider,
+        )
+    except Exception as e:
+        log(f"❌ Manual auto-register crashed: {e}", "ERROR")
+        return jsonify({
+            "error": str(e),
+            "config": auto_register.check_config(captcha_provider),
+        }), 500
     return jsonify({
         "ok": True,
         "registered": len(results),
         "requested": count,
         "accounts": results,
+        "captcha_provider": config.get("captcha_provider"),
     })
 
 

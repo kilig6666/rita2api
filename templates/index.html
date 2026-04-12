@@ -4,6 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>rita2api 管理面板</title>
+<script>
+(() => {
+  try {
+    const savedTheme = localStorage.getItem('rita_theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme === 'light' ? 'light' : 'dark');
+  } catch (e) {
+    document.documentElement.setAttribute('data-theme', 'dark');
+  }
+})();
+</script>
 <style>
 :root {
   --bg: #0f1117;
@@ -17,6 +27,27 @@
   --red: #ef4444;
   --yellow: #eab308;
   --orange: #f97316;
+  --table-head-bg: rgba(0,0,0,.2);
+  --assistant-bg: rgba(255,255,255,.06);
+  --login-overlay-bg: rgba(0,0,0,.85);
+  --modal-overlay-bg: rgba(0,0,0,.6);
+}
+:root[data-theme="light"] {
+  --bg: #f5f7fb;
+  --card: #ffffff;
+  --border: #d7deea;
+  --text: #111827;
+  --text2: #6b7280;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --green: #16a34a;
+  --red: #dc2626;
+  --yellow: #ca8a04;
+  --orange: #ea580c;
+  --table-head-bg: rgba(15,23,42,.04);
+  --assistant-bg: #eef2ff;
+  --login-overlay-bg: rgba(15,23,42,.55);
+  --modal-overlay-bg: rgba(15,23,42,.35);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 body {
@@ -28,7 +59,7 @@ body {
 .container { max-width: 1400px; margin: 0 auto; padding: 20px 24px; }
 
 /* ==================== Login Overlay ==================== */
-.login-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.85); z-index: 9000; align-items: center; justify-content: center; }
+.login-overlay { display: none; position: fixed; inset: 0; background: var(--login-overlay-bg); z-index: 9000; align-items: center; justify-content: center; }
 .login-overlay.show { display: flex; }
 .login-card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 40px 36px; width: 90%; max-width: 380px; text-align: center; }
 .login-card h2 { font-size: 22px; margin-bottom: 8px; }
@@ -91,7 +122,7 @@ body {
 /* ==================== Table ==================== */
 .table-wrap { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 900px; }
-th { text-align: left; padding: 11px 14px; font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); background: rgba(0,0,0,.2); white-space: nowrap; }
+th { text-align: left; padding: 11px 14px; font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--border); background: var(--table-head-bg); white-space: nowrap; }
 td { padding: 10px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
 tr:hover { background: rgba(99,102,241,.04); }
@@ -104,7 +135,7 @@ tr:hover { background: rgba(99,102,241,.04); }
 .badge-info { background: rgba(99,102,241,.15); color: var(--accent); }
 
 /* ==================== Modal ==================== */
-.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.6); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay { display: none; position: fixed; inset: 0; background: var(--modal-overlay-bg); z-index: 1000; align-items: center; justify-content: center; }
 .modal-overlay.show { display: flex; }
 .modal { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 24px; width: 90%; max-width: 560px; max-height: 88vh; overflow-y: auto; }
 .modal.wide { max-width: 800px; }
@@ -142,7 +173,7 @@ tr:hover { background: rgba(99,102,241,.04); }
 .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 400px; }
 .chat-msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-break: break-word; }
 .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-.chat-msg.assistant { align-self: flex-start; background: rgba(255,255,255,.06); border-bottom-left-radius: 4px; }
+.chat-msg.assistant { align-self: flex-start; background: var(--assistant-bg); border-bottom-left-radius: 4px; }
 .chat-msg.system { align-self: center; background: rgba(99,102,241,.1); color: var(--text2); font-size: 12px; max-width: 90%; text-align: center; }
 .chat-msg pre { white-space: pre-wrap; font-family: monospace; font-size: 12px; margin-top: 6px; }
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
@@ -274,9 +305,9 @@ th .row-cb { margin: 0; }
 <!-- ==================== Login Overlay ==================== -->
 <div class="login-overlay" id="loginOverlay">
   <div class="login-card">
-    <h2>🔐 管理员登录</h2>
-    <p>请输入访问令牌以继续</p>
-    <input type="password" id="loginInput" placeholder="Access Token" autocomplete="current-password">
+    <h2>🔐 面板登录</h2>
+    <p>请输入管理密码以继续</p>
+    <input type="password" id="loginInput" placeholder="请输入管理密码" autocomplete="current-password">
     <button class="btn btn-primary" onclick="doLogin()">登 录</button>
     <div class="login-error" id="loginError"></div>
   </div>
@@ -287,6 +318,7 @@ th .row-cb { margin: 0; }
   <div class="topbar">
     <h1>🚀 <span>rita2api</span> 管理面板</h1>
     <div class="topbar-right">
+      <button class="btn btn-outline btn-sm" id="themeToggleBtn" onclick="toggleTheme()" title="切换明亮/黑暗主题">☀️ 明亮</button>
       <button class="btn btn-outline btn-sm" onclick="loadAllData()" title="刷新">🔃</button>
     </div>
   </div>
@@ -352,6 +384,10 @@ th .row-cb { margin: 0; }
           <option value="3">注册 3 个</option>
           <option value="5">注册 5 个</option>
         </select>
+        <select class="model-select" id="regCaptchaProvider" style="width:auto;padding:7px 12px">
+          <option value="yescaptcha">打码: YesCaptcha</option>
+          <option value="ohmycaptcha_local">打码: OhMyCaptcha Local</option>
+        </select>
         <button class="btn btn-primary" id="regBtn" onclick="triggerRegister()">🚀 手动注册</button>
         <button class="btn btn-outline btn-sm" onclick="loadRegConfig()">🔃 刷新状态</button>
       </div>
@@ -364,12 +400,16 @@ th .row-cb { margin: 0; }
         <p id="descAutoReg">加载中...</p>
       </div>
       <div class="reg-config-card">
-        <h4><span class="status-dot yellow" id="dotCaptcha"></span> YesCaptcha</h4>
+        <h4><span class="status-dot yellow" id="dotCaptcha"></span> 验证码服务</h4>
         <p id="descCaptcha">加载中...</p>
       </div>
       <div class="reg-config-card">
         <h4><span class="status-dot yellow" id="dotMail"></span> 邮件服务</h4>
         <p id="descMail">加载中...</p>
+      </div>
+      <div class="reg-config-card">
+        <h4><span class="status-dot yellow" id="dotProxy"></span> 注册代理</h4>
+        <p id="descProxy">加载中...</p>
       </div>
       <div class="reg-config-card">
         <h4><span class="status-dot yellow" id="dotPool"></span> 账号池</h4>
@@ -474,6 +514,11 @@ th .row-cb { margin: 0; }
         <p class="desc" id="descYydsmail">加载中...</p>
         <div style="font-size:12px;color:var(--text2);font-family:monospace" id="yydsmailBase"></div>
       </div>
+      <div class="mail-provider-card">
+        <h4><span class="status-dot yellow" id="dotMoemail"></span> MoeMail</h4>
+        <p class="desc" id="descMoemail">加载中...</p>
+        <div style="font-size:12px;color:var(--text2);font-family:monospace" id="moemailBase"></div>
+      </div>
     </div>
 
     <!-- Account email picker -->
@@ -493,6 +538,7 @@ th .row-cb { margin: 0; }
         <select id="mailCheckProvider" class="model-select" style="width:auto">
           <option value="gptmail">GPTMail</option>
           <option value="yydsmail">YYDSMail</option>
+          <option value="moemail">MoeMail</option>
         </select>
         <button class="btn btn-primary btn-sm" id="mailCheckBtn" onclick="checkMailCode()">查询验证码</button>
       </div>
@@ -534,8 +580,9 @@ th .row-cb { margin: 0; }
       <option value="">-- 无 --</option>
       <option value="gptmail">gptmail</option>
       <option value="yydsmail">yydsmail</option>
+      <option value="moemail">moemail</option>
     </select>
-    <label>Mail API Key（可选）</label>
+    <label>Mail API Key / 凭据（可选）</label>
     <input type="text" id="addMailApiKey" placeholder="your_mail_api_key">
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('addModal')">取消</button>
@@ -582,8 +629,9 @@ th .row-cb { margin: 0; }
       <option value="">-- 无 --</option>
       <option value="gptmail">gptmail</option>
       <option value="yydsmail">yydsmail</option>
+      <option value="moemail">moemail</option>
     </select>
-    <label>Mail API Key（留空不修改）</label>
+    <label>Mail API Key / 凭据（留空不修改）</label>
     <input type="text" id="editMailApiKey" placeholder="留空则保持不变">
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('editModal')">取消</button>
@@ -594,6 +642,34 @@ th .row-cb { margin: 0; }
 
 
 <script>
+// ===================== Theme =====================
+const THEME_STORAGE_KEY = 'rita_theme';
+
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+
+function updateThemeToggle() {
+  const btn = document.getElementById('themeToggleBtn');
+  if (!btn) return;
+  const theme = currentTheme();
+  btn.textContent = theme === 'light' ? '🌙 黑暗' : '☀️ 明亮';
+  btn.title = theme === 'light' ? '切换到黑暗风格' : '切换到明亮风格';
+}
+
+function applyTheme(theme, persist = true) {
+  const nextTheme = theme === 'light' ? 'light' : 'dark';
+  document.documentElement.setAttribute('data-theme', nextTheme);
+  if (persist) {
+    try { localStorage.setItem(THEME_STORAGE_KEY, nextTheme); } catch (e) {}
+  }
+  updateThemeToggle();
+}
+
+function toggleTheme() {
+  applyTheme(currentTheme() === 'light' ? 'dark' : 'light');
+}
+
 // ===================== Auth =====================
 let _authToken = localStorage.getItem('rita_auth_token') || '';
 
@@ -612,11 +688,11 @@ async function checkAuth() {
 
 async function doLogin(silent = false) {
   const token = silent ? _authToken : document.getElementById('loginInput').value.trim();
-  if (!token) { if (!silent) setLoginError('请输入访问令牌'); return false; }
+  if (!token) { if (!silent) setLoginError('请输入管理密码'); return false; }
   try {
     const r = await fetch('/api/login', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({token}) });
     if (r.ok) { _authToken = token; localStorage.setItem('rita_auth_token', token); setLoginError(''); hideLogin(); loadAllData(); return true; }
-    else { if (!silent) setLoginError('令牌无效，请重试'); return false; }
+    else { if (!silent) setLoginError('密码无效，请重试'); return false; }
   } catch(e) { if (!silent) setLoginError('网络错误'); return false; }
 }
 
@@ -629,8 +705,29 @@ async function api(method, path, body) {
   if (_authToken) opts.headers['Authorization'] = 'Bearer ' + _authToken;
   if (body) opts.body = JSON.stringify(body);
   const r = await fetch(path, opts);
-  if (r.status === 401) { _authToken = ''; localStorage.removeItem('rita_auth_token'); showLogin(); throw new Error('Unauthorized'); }
-  return r.json();
+  const raw = await r.text();
+  let data = {};
+  if (raw) {
+    try { data = JSON.parse(raw); }
+    catch { data = { raw_text: raw }; }
+  }
+  if (r.status === 401) {
+    _authToken = '';
+    localStorage.removeItem('rita_auth_token');
+    showLogin();
+    const err = new Error('Unauthorized');
+    err.status = 401;
+    err.payload = data;
+    throw err;
+  }
+  if (!r.ok) {
+    const msg = data?.error?.message || data?.error || data?.message || data?.raw_text || `HTTP ${r.status}`;
+    const err = new Error(String(msg));
+    err.status = r.status;
+    err.payload = data;
+    throw err;
+  }
+  return data;
 }
 
 // ===================== Tab Navigation =====================
@@ -1057,6 +1154,9 @@ async function sendMessage() {
 function loadRegConfig() {
   Promise.all([api('GET', '/api/auto-register/config'), api('GET', '/api/accounts/summary'), api('GET', '/api/stats')])
     .then(([cfg, summary, stats]) => {
+      const regCaptchaProvider = document.getElementById('regCaptchaProvider');
+      if (regCaptchaProvider) regCaptchaProvider.value = cfg.captcha_provider || 'yescaptcha';
+
       // Auto reg
       const dotAR = document.getElementById('dotAutoReg');
       if (cfg.auto_register_enabled) { dotAR.className = 'status-dot green'; document.getElementById('descAutoReg').textContent = `已启用 | 最低活跃: ${cfg.min_active_accounts} | 批量: ${cfg.batch_size}`; }
@@ -1064,33 +1164,75 @@ function loadRegConfig() {
 
       // Captcha
       const dotCP = document.getElementById('dotCaptcha');
-      if (cfg.yescaptcha_configured) { dotCP.className = 'status-dot green'; document.getElementById('descCaptcha').textContent = `已配置 | Sitekey: ${cfg.recaptcha_sitekey.substring(0, 20)}...`; }
-      else { dotCP.className = 'status-dot red'; document.getElementById('descCaptcha').textContent = '未配置 (需要 YESCAPTCHA_KEY)'; }
+      const captchaLabel = cfg.captcha_provider_label || cfg.captcha_provider || 'YesCaptcha';
+      if (cfg.captcha_configured) {
+        dotCP.className = 'status-dot green';
+        document.getElementById('descCaptcha').textContent = cfg.captcha_provider === 'ohmycaptcha_local'
+          ? `当前默认: ${captchaLabel} | API: ${cfg.ohmycaptcha_local_api_url || cfg.captcha_api_url || 'http://127.0.0.1:8001'}`
+          : `当前默认: ${captchaLabel} | Sitekey: ${cfg.recaptcha_sitekey.substring(0, 20)}...`;
+      } else {
+        dotCP.className = 'status-dot red';
+        const missing = (cfg.captcha_missing || []).join(', ') || '验证码配置缺失';
+        document.getElementById('descCaptcha').textContent = `未配置 (${missing})`;
+      }
 
       // Mail
       const dotMail = document.getElementById('dotMail');
-      if (cfg.gptmail_configured) { dotMail.className = 'status-dot green'; document.getElementById('descMail').textContent = `GPTMail 已配置 | ${cfg.gptmail_api_base}`; }
-      else if (cfg.yydsmail_configured) { dotMail.className = 'status-dot green'; document.getElementById('descMail').textContent = `YYDSMail 已配置 | ${cfg.yydsmail_api_base}`; }
-      else { dotMail.className = 'status-dot red'; document.getElementById('descMail').textContent = '未配置邮件服务 (GPTMAIL_API_KEY 或 YYDSMAIL_API_KEY)'; }
+      const providerBaseMap = {
+        gptmail: cfg.gptmail_api_base || '-',
+        yydsmail: cfg.yydsmail_api_base || '-',
+        moemail: cfg.moemail_api_base || '-',
+      };
+      const providerLabelMap = {
+        gptmail: 'GPTMail',
+        yydsmail: 'YYDSMail',
+        moemail: 'MoeMail',
+      };
+      if (cfg.mail_provider_configured) {
+        dotMail.className = 'status-dot green';
+        document.getElementById('descMail').textContent = `当前默认: ${providerLabelMap[cfg.mail_provider_default] || cfg.mail_provider_default} | ${providerBaseMap[cfg.mail_provider_default] || '-'}`;
+      } else {
+        dotMail.className = 'status-dot red';
+        const missing = (cfg.mail_provider_missing || []).join(', ') || '邮件配置缺失';
+        document.getElementById('descMail').textContent = `未配置默认邮件服务 (${missing})`;
+      }
+
+      // Proxy
+      const dotProxy = document.getElementById('dotProxy');
+      const proxyText = cfg.register_proxy || '未设置';
+      if (cfg.register_proxy_configured) {
+        dotProxy.className = 'status-dot green';
+        document.getElementById('descProxy').textContent = cfg.mail_use_proxy
+          ? `主注册走代理 | 邮箱请求也走代理 | ${proxyText}`
+          : `主注册走代理 | 邮箱请求直连 | ${proxyText}`;
+      } else {
+        dotProxy.className = 'status-dot yellow';
+        document.getElementById('descProxy').textContent = '当前按直连注册（可在配置页填写 REGISTER_PROXY）';
+      }
 
       // Pool
+      const dotPool = document.getElementById('dotPool');
+      dotPool.className = (summary.active ?? 0) > 0 ? 'status-dot green' : 'status-dot yellow';
       document.getElementById('descPool').textContent = `活跃: ${summary.active ?? 0} / 总: ${summary.total ?? 0} / 点数: ${summary.total_quota ?? 0}`;
-    }).catch(e => {});
+    }).catch(e => {
+      addRegLog('warn', `⚠️ 注册状态加载失败: ${e.message}`);
+    });
 }
 
 async function triggerRegister() {
   const count = parseInt(document.getElementById('regCount').value);
+  const captchaProvider = document.getElementById('regCaptchaProvider')?.value || 'yescaptcha';
   const btn = document.getElementById('regBtn');
   btn.disabled = true; btn.textContent = '注册中...';
-  addRegLog('info', `开始注册 ${count} 个账号...`);
+  addRegLog('info', `开始注册 ${count} 个账号... 打码=${captchaProvider}`);
 
   try {
-    const res = await api('POST', '/api/auto-register', { count });
+    const res = await api('POST', '/api/auto-register', { count, captcha_provider: captchaProvider });
     if (res.registered > 0) {
       addRegLog('ok', `✅ 成功注册 ${res.registered}/${res.requested} 个账号`);
       if (res.accounts) {
         res.accounts.forEach(acc => {
-          addRegLog('ok', `  + ${acc.email || 'unknown'} | token: ${(acc.token || '').substring(0, 12)}...`);
+          addRegLog('ok', `  + ${acc.email || 'unknown'} | captcha=${acc.captcha_provider || res.captcha_provider || captchaProvider} | token: ${(acc.token || '').substring(0, 12)}...`);
         });
       }
       loadAccounts(); loadStats(); loadRegConfig();
@@ -1098,13 +1240,23 @@ async function triggerRegister() {
       addRegLog('err', `❌ 注册失败: ${res.error || '未知错误'}`);
       if (res.config) {
         const missing = [];
-        if (!res.config.yescaptcha_configured) missing.push('YESCAPTCHA_KEY');
-        if (!res.config.gptmail_configured) missing.push('GPTMAIL_API_KEY');
+        (res.config.captcha_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
+        (res.config.mail_provider_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
         if (missing.length) addRegLog('err', `  缺失配置: ${missing.join(', ')}`);
       }
     }
   } catch(e) {
-    addRegLog('err', `❌ 请求失败: ${e.message}`);
+    const payload = e.payload || {};
+    addRegLog('err', `❌ 注册请求失败: ${e.message}`);
+    if (payload.config) {
+      const missing = [];
+      (payload.config.captcha_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
+      (payload.config.mail_provider_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
+      if (missing.length) addRegLog('err', `  缺失配置: ${missing.join(', ')}`);
+      if (payload.config.register_proxy_configured) {
+        addRegLog('warn', `  当前注册代理: ${payload.config.register_proxy}`);
+      }
+    }
   } finally {
     btn.disabled = false; btn.textContent = '🚀 手动注册';
   }
@@ -1127,17 +1279,24 @@ function clearRegLog() { document.getElementById('regLog').innerHTML = '<div cla
 function loadMailStatus() {
   // Load mail provider status
   api('GET', '/api/mail/status').then(res => {
+    const defaultProvider = res.default_provider || 'gptmail';
     const gpt = res.gptmail || {};
     const dotG = document.getElementById('dotGptmail');
-    if (gpt.configured) { dotG.className = 'status-dot green'; document.getElementById('descGptmail').textContent = '已配置并可用'; }
+    if (gpt.configured) { dotG.className = 'status-dot green'; document.getElementById('descGptmail').textContent = defaultProvider === 'gptmail' ? '已配置并可用（当前默认）' : '已配置并可用'; }
     else { dotG.className = 'status-dot red'; document.getElementById('descGptmail').textContent = '未配置 (需要 GPTMAIL_API_KEY)'; }
     document.getElementById('gptmailBase').textContent = 'API: ' + (gpt.api_base || '-');
 
     const yyds = res.yydsmail || {};
     const dotY = document.getElementById('dotYydsmail');
-    if (yyds.configured) { dotY.className = 'status-dot green'; document.getElementById('descYydsmail').textContent = '已配置并可用'; }
+    if (yyds.configured) { dotY.className = 'status-dot green'; document.getElementById('descYydsmail').textContent = defaultProvider === 'yydsmail' ? '已配置并可用（当前默认）' : '已配置并可用'; }
     else { dotY.className = 'status-dot red'; document.getElementById('descYydsmail').textContent = '未配置 (需要 YYDSMAIL_API_KEY)'; }
     document.getElementById('yydsmailBase').textContent = 'API: ' + (yyds.api_base || '-');
+
+    const moe = res.moemail || {};
+    const dotM = document.getElementById('dotMoemail');
+    if (moe.configured) { dotM.className = 'status-dot green'; document.getElementById('descMoemail').textContent = defaultProvider === 'moemail' ? '已配置并可用（当前默认）' : '已配置并可用'; }
+    else { dotM.className = 'status-dot red'; document.getElementById('descMoemail').textContent = '未配置 (需要 MOEMAIL_API_KEY / MOEMAIL_API_BASE)'; }
+    document.getElementById('moemailBase').textContent = 'API: ' + (moe.api_base || '-');
   }).catch(e => {});
 
   // Load account emails for picker
@@ -1206,9 +1365,9 @@ let _configFilter = '';
 const CONFIG_GROUPS = {
   '核心设置': { icon: '🌐', keys: ['RITA_UPSTREAM', 'RITA_ORIGIN', 'DISABLE_SSL_VERIFY', 'HOST', 'PORT'] },
   '访问安全': { icon: '🔒', keys: ['AUTH_TOKEN', 'FLASK_SECRET'] },
-  '自动注册': { icon: '🤖', keys: ['AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH', 'AUTO_REGISTER_PASSWORD', 'AUTO_REGISTER_MIN_QUOTA'] },
-  '验证码服务': { icon: '🧩', keys: ['YESCAPTCHA_KEY', 'CAPTCHA_PROVIDER'] },
-  '邮件服务': { icon: '📧', keys: ['GPTMAIL_API_KEY', 'GPTMAIL_API_BASE', 'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE'] },
+  '自动注册': { icon: '🤖', keys: ['AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH', 'AUTO_REGISTER_PASSWORD', 'AUTO_REGISTER_MIN_QUOTA', 'REGISTER_PROXY', 'MAIL_USE_PROXY'] },
+  '验证码服务': { icon: '🧩', keys: ['CAPTCHA_PROVIDER', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_API_URL', 'OHMYCAPTCHA_LOCAL_KEY'] },
+  '邮件服务': { icon: '📧', keys: ['MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE', 'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE'] },
   '健康检查': { icon: '🏥', keys: ['HEALTH_CHECK_INTERVAL'] },
 };
 
@@ -1216,7 +1375,7 @@ const CONFIG_GROUPS = {
 const CONFIG_DESC = {
   'RITA_UPSTREAM': 'Rita.ai 上游 API 地址，所有请求将转发到此 URL',
   'RITA_ORIGIN': '请求 Headers 中的 Origin，用于上游鉴权',
-  'AUTH_TOKEN': '管理面板访问令牌，留空则无需登录（建议设置）',
+  'AUTH_TOKEN': '管理面板登录密码，同时也是 /v1 接口 Bearer 鉴权密码；默认 981115',
   'DISABLE_SSL_VERIFY': '是否跳过上游 SSL 证书验证（解决证书域名不匹配问题）',
   'HEALTH_CHECK_INTERVAL': '后台健康检查间隔时间（秒），默认 600',
   'AUTO_REGISTER_ENABLED': '启用后，当活跃账号低于最低数量时自动注册新账号',
@@ -1224,19 +1383,37 @@ const CONFIG_DESC = {
   'AUTO_REGISTER_BATCH': '每次自动补号注册的账号数量',
   'AUTO_REGISTER_PASSWORD': '自动注册时设置的默认密码',
   'AUTO_REGISTER_MIN_QUOTA': '当总剩余点数低于此值时触发自动补号',
+  'REGISTER_PROXY': '注册 Rita 账号时使用的固定代理，支持 http / https / socks5',
+  'MAIL_USE_PROXY': '启用后，GPTMail / YYDSMail / MoeMail 请求也复用 REGISTER_PROXY',
+  'CAPTCHA_PROVIDER': '自动注册默认打码服务：yescaptcha 或 ohmycaptcha_local',
   'YESCAPTCHA_KEY': 'YesCaptcha 打码服务 API Key，用于解决注册验证码',
-  'CAPTCHA_PROVIDER': '验证码服务商：yescaptcha 或 whisper',
+  'OHMYCAPTCHA_LOCAL_API_URL': 'OhMyCaptcha Local API 地址，默认 http://127.0.0.1:8001',
+  'OHMYCAPTCHA_LOCAL_KEY': 'OhMyCaptcha Local client key；留空时自动使用默认 ohmycaptcha-local-key',
+  'MAIL_PROVIDER_DEFAULT': '自动注册默认使用的邮箱渠道：gptmail / yydsmail / moemail',
   'GPTMAIL_API_KEY': 'GPTMail 临时邮箱 API Key，用于接收注册验证码',
   'GPTMAIL_API_BASE': 'GPTMail API 基础 URL',
   'YYDSMAIL_API_KEY': 'YYDSMail 邮箱 API Key',
   'YYDSMAIL_API_BASE': 'YYDSMail API 基础 URL',
+  'MOEMAIL_API_KEY': 'MoeMail API Key，用于创建邮箱与查询验证码',
+  'MOEMAIL_API_BASE': 'MoeMail API 基础 URL',
   'FLASK_SECRET': 'Flask 会话密钥（自动生成，一般无需修改）',
 };
 
 // Which keys are boolean toggles
-const CONFIG_BOOLEANS = new Set(['DISABLE_SSL_VERIFY', 'AUTO_REGISTER_ENABLED']);
+const CONFIG_BOOLEANS = new Set(['DISABLE_SSL_VERIFY', 'AUTO_REGISTER_ENABLED', 'MAIL_USE_PROXY']);
 // Which keys are secrets (show/hide toggle)
-const CONFIG_SECRETS = new Set(['AUTH_TOKEN', 'YESCAPTCHA_KEY', 'GPTMAIL_API_KEY', 'YYDSMAIL_API_KEY', 'FLASK_SECRET', 'AUTO_REGISTER_PASSWORD']);
+const CONFIG_SECRETS = new Set(['AUTH_TOKEN', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_KEY', 'GPTMAIL_API_KEY', 'YYDSMAIL_API_KEY', 'MOEMAIL_API_KEY', 'FLASK_SECRET', 'AUTO_REGISTER_PASSWORD']);
+const CONFIG_OPTIONS = {
+  'CAPTCHA_PROVIDER': [
+    { value: 'yescaptcha', label: 'yescaptcha' },
+    { value: 'ohmycaptcha_local', label: 'ohmycaptcha_local' },
+  ],
+  'MAIL_PROVIDER_DEFAULT': [
+    { value: 'gptmail', label: 'gptmail' },
+    { value: 'yydsmail', label: 'yydsmail' },
+    { value: 'moemail', label: 'moemail' },
+  ],
+};
 
 async function loadConfig() {
   try {
@@ -1305,6 +1482,7 @@ function renderConfigRow(c) {
   const desc = CONFIG_DESC[key] || c.description || '';
   const isBool = CONFIG_BOOLEANS.has(key);
   const isSecret = CONFIG_SECRETS.has(key);
+  const selectOptions = CONFIG_OPTIONS[key] || null;
   const inputId = 'cfg-' + key.replace(/[^a-zA-Z0-9]/g, '_');
 
   let editHtml = '';
@@ -1324,6 +1502,13 @@ function renderConfigRow(c) {
         <input type="password" class="cfg-input" id="${inputId}" value="${esc(value)}" placeholder="${masked || '未设置'}" autocomplete="off">
         <button class="cfg-reveal-btn" onclick="toggleReveal(this)" title="显示/隐藏" type="button">👁</button>
       </div>
+      <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+    </div>`;
+  } else if (selectOptions) {
+    editHtml = `<div class="cfg-edit-row">
+      <select class="cfg-input" id="${inputId}">
+        ${selectOptions.map(option => `<option value="${esc(option.value)}" ${option.value === value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
+      </select>
       <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
     </div>`;
   } else {
@@ -1385,6 +1570,22 @@ async function saveConfigInline(key, value, triggerEl) {
       if (toggleLabel) toggleLabel.textContent = value === '1' ? '已启用' : '已禁用';
     }
 
+    if ([
+      'AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH',
+      'CAPTCHA_PROVIDER', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_API_URL', 'OHMYCAPTCHA_LOCAL_KEY',
+      'MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE',
+      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE',
+      'REGISTER_PROXY', 'MAIL_USE_PROXY'
+    ].includes(key)) {
+      loadRegConfig();
+    }
+    if ([
+      'MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE',
+      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE'
+    ].includes(key)) {
+      loadMailStatus();
+    }
+
     toast(`${key} 已更新`, 'success');
   } catch(e) {
     if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存'; }
@@ -1410,6 +1611,7 @@ document.addEventListener('keydown', e => {
 });
 
 // Boot: check auth, then load data
+applyTheme(currentTheme(), false);
 checkAuth().then(() => {
   if (!document.getElementById('loginOverlay').classList.contains('show')) {
     loadAllData();
