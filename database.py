@@ -98,6 +98,19 @@ class DB:
             conn.execute(
                 "ALTER TABLE usage_log ADD COLUMN request_type TEXT NOT NULL DEFAULT 'unknown'"
             )
+        account_columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(accounts)")
+        }
+        account_column_migrations = {
+            "failures": "ALTER TABLE accounts ADD COLUMN failures INTEGER NOT NULL DEFAULT 0",
+            "inflight_count": "ALTER TABLE accounts ADD COLUMN inflight_count INTEGER NOT NULL DEFAULT 0",
+            "last_selected_at": "ALTER TABLE accounts ADD COLUMN last_selected_at REAL NOT NULL DEFAULT 0",
+            "disabled_at": "ALTER TABLE accounts ADD COLUMN disabled_at REAL NOT NULL DEFAULT 0",
+        }
+        for column_name, ddl in account_column_migrations.items():
+            if column_name not in account_columns:
+                conn.execute(ddl)
         # Seed default config values (INSERT OR IGNORE = don't overwrite existing)
         defaults = [
             ("RITA_UPSTREAM", "https://api_v2.rita.ai", "Rita.ai upstream API URL"),

@@ -1,0 +1,14 @@
+.git
+.claude
+.venv
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.DS_Store
+.env
+data/
+tests/
+docs/
+examples/

@@ -100,6 +100,9 @@ def _row_to_status(row) -> dict:
         "created_at": d.get("created_at", 0),
         "token_valid": bool(d.get("token_valid", 1)),
         "disabled_reason": d.get("disabled_reason", ""),
+        "inflight_count": d.get("inflight_count", 0) or 0,
+        "last_selected_at": d.get("last_selected_at", 0) or 0,
+        "disabled_at": d.get("disabled_at", 0) or 0,
         "password_set": bool(d.get("password", "")),
         "mail_provider": d.get("mail_provider", ""),
         "mail_api_key_set": bool(d.get("mail_api_key", "")),
@@ -130,6 +133,9 @@ class Account:
         self.last_error = d.get("last_error", "")
         self.token_valid = bool(d.get("token_valid", 1))
         self.disabled_reason = d.get("disabled_reason", "")
+        self.inflight_count = d.get("inflight_count", 0) or 0
+        self.last_selected_at = d.get("last_selected_at", 0) or 0
+        self.disabled_at = d.get("disabled_at", 0) or 0
         self.created_at = d.get("created_at", 0)
 
     def to_status(self) -> dict:
@@ -142,7 +148,11 @@ class Account:
             "total_requests": self.total_requests, "total_success": self.total_success,
             "total_fail": self.total_fail, "last_used": self.last_used,
             "last_error": self.last_error, "token_valid": self.token_valid,
-            "disabled_reason": self.disabled_reason, "created_at": self.created_at,
+            "disabled_reason": self.disabled_reason,
+            "inflight_count": self.inflight_count,
+            "last_selected_at": self.last_selected_at,
+            "disabled_at": self.disabled_at,
+            "created_at": self.created_at,
         })
 
 
@@ -165,6 +175,15 @@ class AccountManager:
             self._db.execute("ALTER TABLE accounts ADD COLUMN failures INTEGER NOT NULL DEFAULT 0")
         except Exception:
             pass  # column already exists
+        for ddl in (
+            "ALTER TABLE accounts ADD COLUMN inflight_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE accounts ADD COLUMN last_selected_at REAL NOT NULL DEFAULT 0",
+            "ALTER TABLE accounts ADD COLUMN disabled_at REAL NOT NULL DEFAULT 0",
+        ):
+            try:
+                self._db.execute(ddl)
+            except Exception:
+                pass
         count = self._db.fetchone("SELECT COUNT(*) as c FROM accounts")["c"]
         print(f"[AccountManager] Loaded {count} accounts from SQLite")
 
@@ -330,6 +349,100 @@ class AccountManager:
                 f"(failures={fallback_acc.failures}, last_used={fallback_acc.last_used})"
             )
             return fallback_acc, fallback_index
+
+    def reserve_next(self, min_quota: int = 0, exclude_ids: list[str] | set[str] | tuple[str, ...] | None = None) -> Account | None:
+        """原子保留一个账号，避免并发请求反复撞到同一账号。"""
+        min_quota_value = max(0, int(min_quota or 0))
+        exclude_list = [str(item).strip() for item in (exclude_ids or []) if str(item).strip()]
+
+        with self._lock:
+            conn = self._db._get_conn()
+            placeholders = ""
+            params: list = [min_quota_value]
+            exclude_sql = ""
+            if exclude_list:
+                placeholders = ",".join("?" for _ in exclude_list)
+                exclude_sql = f" AND id NOT IN ({placeholders})"
+                params.extend(exclude_list)
+
+            now = time.time()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute(
+                    f"""
+                    SELECT *
+                    FROM accounts
+                    WHERE enabled=1
+                      AND quota_remain>=?
+                      {exclude_sql}
+                    ORDER BY inflight_count ASC, last_selected_at ASC, id ASC
+                    LIMIT 1
+                    """,
+                    tuple(params),
+                ).fetchone()
+                if row is None:
+                    conn.commit()
+                    return None
+
+                account_id = row["id"]
+                update_params = (now, account_id, min_quota_value)
+                cur = conn.execute(
+                    """
+                    UPDATE accounts
+                    SET inflight_count=inflight_count+1,
+                        last_selected_at=?
+                    WHERE id=?
+                      AND enabled=1
+                      AND quota_remain>=?
+                    """,
+                    update_params,
+                )
+                if cur.rowcount != 1:
+                    conn.rollback()
+                    return None
+
+                reserved_row = conn.execute(
+                    "SELECT * FROM accounts WHERE id=?",
+                    (account_id,),
+                ).fetchone()
+                conn.commit()
+                return Account(reserved_row) if reserved_row else None
+            except Exception:
+                conn.rollback()
+                raise
+
+    def release_reservation(self, account_id: str):
+        if not str(account_id or "").strip():
+            return
+        self._db.execute(
+            """
+            UPDATE accounts
+            SET inflight_count=CASE
+                WHEN inflight_count > 0 THEN inflight_count - 1
+                ELSE 0
+            END
+            WHERE id=?
+            """,
+            (account_id,),
+        )
+
+    def disable_quota_exhausted(self, account_id: str, error: str = "") -> Account | None:
+        now = time.time()
+        error_text = str(error or "").strip() or "quota exhausted (auto-disabled)"
+        self._db.execute(
+            """
+            UPDATE accounts
+            SET enabled=0,
+                quota_remain=0,
+                disabled_reason='quota_exhausted',
+                disabled_at=?,
+                last_error=?,
+                last_used=?
+            WHERE id=?
+            """,
+            (now, error_text, now, account_id),
+        )
+        return self.get(account_id)
 
     def mark_ok(self, acc: Account):
         self._db.execute(
@@ -525,14 +638,16 @@ class AccountManager:
         if new_token:
             self._db.execute(
                 """UPDATE accounts SET token=?, enabled=1, token_valid=1,
-                   failures=0, last_error='', disabled_reason='', quota_remain=100
+                   failures=0, last_error='', disabled_reason='',
+                   disabled_at=0, quota_remain=100
                    WHERE id=?""",
                 (new_token, account_id)
             )
         else:
             self._db.execute(
                 """UPDATE accounts SET enabled=1, token_valid=1,
-                   failures=0, last_error='', disabled_reason=''
+                   failures=0, last_error='', disabled_reason='',
+                   disabled_at=0
                    WHERE id=?""",
                 (account_id,)
             )

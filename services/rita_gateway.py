@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Generator, Mapping
+from itertools import chain
 from typing import Any
 
 import requests
@@ -96,6 +97,72 @@ class RitaGateway:
         response.raise_for_status()
         return response.json()
 
+    def fetch_image_model_types(self, headers: Mapping[str, str], timeout: int = 15) -> JsonDict:
+        response = self._post(
+            "/aiart/modelList",
+            headers=headers,
+            json_body={},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def fetch_image_model_details(
+        self,
+        headers: Mapping[str, str],
+        model_type_id: int,
+        *,
+        language: str = "zh",
+        timeout: int = 15,
+    ) -> JsonDict:
+        response = self._post(
+            "/aiart/modelDetailList",
+            headers=headers,
+            json_body={"model_type_id": int(model_type_id), "language": language},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def submit_image_generation(
+        self,
+        headers: Mapping[str, str],
+        payload: JsonDict,
+        timeout: int = 60,
+    ) -> JsonDict:
+        generate = payload.get("generate", {}) or {}
+        has_edit_payload = bool(generate.get("method")) or bool(generate.get("edit_image"))
+        has_reference_images = bool(generate.get("image"))
+        endpoint = "/aiart/edit" if has_edit_payload else "/aiart/generate"
+        if has_reference_images and endpoint == "/aiart/generate":
+            generate = {**generate, "generation_mode": "image-to-image"}
+        elif endpoint == "/aiart/generate":
+            generate = {**generate, "generation_mode": "text-to-image"}
+        response = self._post(
+            endpoint,
+            headers=headers,
+            json_body={**payload, "generate": generate},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def stream_image_records(
+        self,
+        headers: Mapping[str, str],
+        parent_message_id: str,
+        *,
+        language: str = "zh",
+        timeout: int = 180,
+    ) -> requests.Response:
+        return self._post(
+            "/ai/task/record/push",
+            headers=headers,
+            json_body={"language": language, "parent_message_id": str(parent_message_id or "").strip()},
+            timeout=timeout,
+            stream=True,
+        )
+
     def fetch_tools(self, headers: Mapping[str, str], timeout: int = 15) -> JsonDict:
         response = self._post(
             "/gamsai_api/v1/page_service/aiTools",
@@ -165,7 +232,12 @@ def iter_rita_sse(response: requests.Response) -> Generator[JsonDict, None, None
     yield from flush_event()
 
 
-def collect_rita_response(response: requests.Response) -> JsonDict:
+def collect_rita_response(
+    response: requests.Response,
+    *,
+    prefetched_events: list[JsonDict] | None = None,
+    event_iter: Generator[JsonDict, None, None] | None = None,
+) -> JsonDict:
     """把 Rita SSE 汇总成完整文本，供非流式接口或 tool 解析复用。"""
 
     created_ts = int(time.time())
@@ -173,8 +245,10 @@ def collect_rita_response(response: requests.Response) -> JsonDict:
     content_parts: list[str] = []
     final_event: JsonDict | None = None
 
-    with response:
-        for event in iter_rita_sse(response):
+    iterator = event_iter or iter_rita_sse(response)
+    prefetched = prefetched_events or []
+    try:
+        for event in chain(prefetched, iterator):
             event_type = str(event.get("type", ""))
             if event_type in {"quota_remain", "conv_title"}:
                 continue
@@ -194,6 +268,8 @@ def collect_rita_response(response: requests.Response) -> JsonDict:
             content = delta.get("content", "")
             if content:
                 content_parts.append(str(content))
+    finally:
+        response.close()
 
     return {
         "content": "".join(content_parts),

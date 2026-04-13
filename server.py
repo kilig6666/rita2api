@@ -9,6 +9,7 @@ import json
 import os
 import re
 import time
+import base64
 import hashlib
 import datetime
 import threading
@@ -49,7 +50,15 @@ from adapters.anthropic_protocol import (
     parse_tool_calls_from_text,
 )
 from services.rita_gateway import RitaGateway, collect_rita_response, iter_rita_sse
-from services.rita_dispatch import acquire_lease, mark_failure, mark_success, NoAvailableAccountError
+from services.rita_dispatch import (
+    NoAvailableAccountError,
+    acquire_lease,
+    disable_quota_exhausted,
+    is_quota_exhausted_message,
+    mark_failure,
+    mark_success,
+    release_lease,
+)
 from routes.protocol_handlers import (
     handle_chat_completions_api,
     handle_anthropic_count_tokens,
@@ -468,6 +477,21 @@ _conversation_state: dict[str, dict] = {}
 _models_cache: dict = {}
 _models_cache_ts: float = 0
 MODELS_CACHE_TTL = 3600
+_TEXT_PROXY_UNSUPPORTED_ABILITIES = {"image"}
+_TEXT_PROXY_KNOWN_UNSUPPORTED_MODEL_IDS = {
+    "model_1080",
+    "model_1114",
+    "model_1118",
+    "model_1121",
+    "model_1123",
+}
+_IMAGE_MODEL_CACHE_TTL = 3600
+_image_model_types_cache: list[dict] = []
+_image_model_types_cache_ts: float = 0
+_image_model_details_cache: dict[int, list[dict]] = {}
+_image_model_details_cache_ts: dict[int, float] = {}
+_IMAGE_ACCOUNT_COOLDOWN_SECONDS = 600
+_image_account_cooldowns: dict[str, float] = {}
 
 _ai_tools_cache: dict = {}
 _ai_tools_cache_ts: float = 0
@@ -748,6 +772,8 @@ def _build_protocol_deps() -> dict:
         "RITA_ORIGIN": _get_runtime_origin(),
         "rita_gateway": _get_rita_gateway(),
         "resolve_model": _resolve_rita_model_for_request,
+        "validate_text_model": _validate_text_proxy_model,
+        "generate_image": _generate_openai_image_result,
         "get_or_create_conversation": get_or_create_conversation,
         "update_conversation_state": update_conversation_state,
         "get_response_state": get_response_state,
@@ -760,9 +786,12 @@ def _build_protocol_deps() -> dict:
         "log": log,
         "get_cost": get_cost,
         "acquire_lease": acquire_lease,
+        "disable_quota_exhausted": disable_quota_exhausted,
+        "is_quota_exhausted_message": is_quota_exhausted_message,
         "mark_success": mark_success,
         "mark_failure": mark_failure,
         "NoAvailableAccountError": NoAvailableAccountError,
+        "release_lease": release_lease,
         "estimate_anthropic_tokens": estimate_anthropic_tokens,
         "anthropic_messages_to_openai_chat": anthropic_messages_to_openai_chat,
         "build_anthropic_message_response": build_anthropic_message_response,
@@ -815,6 +844,66 @@ def _model_alias_signature(value: str) -> tuple[str, ...]:
     return tuple(sorted(re.findall(r"[a-z]+|\d+", str(value or "").lower())))
 
 
+def _find_cached_model_item(model: str) -> dict | None:
+    model_text = str(model or "").strip()
+    if not model_text or not _models_cache:
+        return None
+
+    model_lower = model_text.lower()
+    signature = _model_alias_signature(model_text)
+    for item in _models_cache.get("data", []):
+        item_id = str(item.get("id") or "").strip()
+        item_name = str(item.get("name") or item_id).strip()
+        item_id_lower = item_id.lower()
+        item_name_lower = item_name.lower()
+        if model_lower in {item_id_lower, item_name_lower}:
+            return item
+        if signature and signature == _model_alias_signature(item_name):
+            return item
+    return None
+
+
+def _is_text_proxy_supported_model(item: dict) -> bool:
+    ability = str(item.get("ability") or "").strip().lower()
+    model_id = str(item.get("id") or "").strip().lower()
+    if ability in _TEXT_PROXY_UNSUPPORTED_ABILITIES:
+        return False
+    if model_id in _TEXT_PROXY_KNOWN_UNSUPPORTED_MODEL_IDS:
+        return False
+    return True
+
+
+def _text_proxy_model_error_message(model_name: str, model_id: str) -> str:
+    display_name = str(model_name or model_id or "该模型").strip()
+    return (
+        f"{display_name} 属于 Rita 图像模型，当前代理只桥接文本对话接口。"
+        "请不要在 /v1/chat/completions 或 /v1/messages 中使用它；"
+        "请改用 /v1/images/generations，或在 /v1/responses 中按图像生成协议调用。"
+    )
+
+
+def _validate_text_proxy_model(requested_model: str, resolved_model: str, headers: dict | None = None) -> str | None:
+    item = _find_cached_model_item(resolved_model) or _find_cached_model_item(requested_model)
+    if not item and headers:
+        try:
+            _refresh_model_cache(headers)
+        except Exception as e:
+            log(f"⚠️ Failed to refresh model cache for support check: {e}", "WARNING")
+        item = _find_cached_model_item(resolved_model) or _find_cached_model_item(requested_model)
+
+    if item and not _is_text_proxy_supported_model(item):
+        return _text_proxy_model_error_message(item.get("name", requested_model), item.get("id", resolved_model))
+
+    if str(resolved_model or "").strip().lower() in _TEXT_PROXY_KNOWN_UNSUPPORTED_MODEL_IDS:
+        return _text_proxy_model_error_message(requested_model, resolved_model)
+    return None
+
+
+def _filter_text_proxy_models(catalog: dict) -> dict:
+    data = [item for item in catalog.get("data", []) if _is_text_proxy_supported_model(item)]
+    return {**catalog, "data": data}
+
+
 def _refresh_model_cache(headers: dict) -> None:
     global _models_cache, _models_cache_ts
     now = time.time()
@@ -834,6 +923,7 @@ def _refresh_model_cache(headers: dict) -> None:
                 "quota": model.get("quota", 0),
                 "tool": model.get("tool", ""),
                 "ability": model.get("ability", ""),
+                "model_type_id": model.get("model_type_id"),
                 "category": cat_name,
             })
     _models_cache = {"object": "list", "data": data}
@@ -858,6 +948,323 @@ def _get_model_catalog(force_refresh: bool = False) -> dict:
     except Exception as e:
         acm.mark_fail(acc, str(e))
         raise
+
+
+def _get_text_proxy_model_catalog(force_refresh: bool = False) -> dict:
+    """仅返回当前文本代理真正可用的模型，避免把图像模型暴露给聊天接口。"""
+    return _filter_text_proxy_models(_get_model_catalog(force_refresh=force_refresh))
+
+
+def _cleanup_image_account_cooldowns() -> None:
+    now = time.time()
+    expired_ids = [account_id for account_id, expires_at in _image_account_cooldowns.items() if expires_at <= now]
+    for account_id in expired_ids:
+        _image_account_cooldowns.pop(account_id, None)
+
+
+def _mark_image_account_cooldown(account_id: str, seconds: int = _IMAGE_ACCOUNT_COOLDOWN_SECONDS) -> None:
+    account_text = str(account_id or "").strip()
+    if not account_text:
+        return
+    _image_account_cooldowns[account_text] = time.time() + max(60, int(seconds or _IMAGE_ACCOUNT_COOLDOWN_SECONDS))
+
+
+def _get_cached_image_cooldown_ids() -> set[str]:
+    _cleanup_image_account_cooldowns()
+    return set(_image_account_cooldowns.keys())
+
+
+def _get_image_model_types(headers: dict, *, force_refresh: bool = False) -> list[dict]:
+    global _image_model_types_cache, _image_model_types_cache_ts
+    now = time.time()
+    if not force_refresh and _image_model_types_cache and now - _image_model_types_cache_ts < _IMAGE_MODEL_CACHE_TTL:
+        return list(_image_model_types_cache)
+
+    upstream = _get_rita_gateway().fetch_image_model_types(headers)
+    _image_model_types_cache = list(upstream.get("data", []) or [])
+    _image_model_types_cache_ts = now
+    return list(_image_model_types_cache)
+
+
+def _get_image_model_details(headers: dict, model_type_id: int, *, force_refresh: bool = False) -> list[dict]:
+    type_id = int(model_type_id or 0)
+    if type_id <= 0:
+        return []
+
+    now = time.time()
+    last_refresh = _image_model_details_cache_ts.get(type_id, 0)
+    cached = _image_model_details_cache.get(type_id, [])
+    if not force_refresh and cached and now - last_refresh < _IMAGE_MODEL_CACHE_TTL:
+        return list(cached)
+
+    upstream = _get_rita_gateway().fetch_image_model_details(headers, type_id)
+    details = list(upstream.get("data", []) or [])
+    _image_model_details_cache[type_id] = details
+    _image_model_details_cache_ts[type_id] = now
+    return list(details)
+
+
+def _resolve_image_model_metadata(model: str, headers: dict) -> tuple[str, dict]:
+    resolved_model = _resolve_rita_model_for_request(model, headers)
+    item = _find_cached_model_item(resolved_model) or _find_cached_model_item(model)
+    if not item:
+        _refresh_model_cache(headers)
+        item = _find_cached_model_item(resolved_model) or _find_cached_model_item(model)
+    if not item:
+        raise ValueError(f"model not found: {model}")
+
+    ability = str(item.get("ability") or "").strip().lower()
+    if ability != "image":
+        raise ValueError(f"{item.get('name', model)} 不是图像模型，请改用文本对话接口")
+
+    model_type_id = int(item.get("model_type_id") or 0)
+    if model_type_id <= 0:
+        image_types = _get_image_model_types(headers, force_refresh=True)
+        matched_type = next((row for row in image_types if str(row.get("name") or "").strip() == str(item.get("category") or "").strip()), None)
+        model_type_id = int((matched_type or {}).get("id") or 0)
+    if model_type_id <= 0:
+        raise ValueError(f"无法解析图像模型类型: {item.get('name', model)}")
+
+    details = _get_image_model_details(headers, model_type_id)
+    item_numeric_id = re.sub(r"^model_", "", str(item.get("id") or "").strip())
+    detail = next((row for row in details if str(row.get("id")) == item_numeric_id), None)
+    if not detail:
+        details = _get_image_model_details(headers, model_type_id, force_refresh=True)
+        detail = next((row for row in details if str(row.get("id")) == item_numeric_id), None)
+    if not detail:
+        raise ValueError(f"无法加载图像模型详情: {item.get('name', model)}")
+
+    merged = {
+        **detail,
+        "key": item.get("id"),
+        "ability": item.get("ability"),
+        "model_type_id": model_type_id,
+        "model_type_name": detail.get("model_type_name") or next(
+            (row.get("name") for row in _image_model_types_cache if int(row.get("id") or 0) == model_type_id),
+            item.get("category") or "",
+        ),
+    }
+    return resolved_model, merged
+
+
+def _normalize_image_count(value, default: int = 1) -> int:
+    try:
+        count = int(value)
+    except Exception:
+        count = default
+    return min(max(count, 1), 4)
+
+
+def _normalize_image_response_format(value: str | None, default: str = "b64_json") -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    if text in {"b64_json", "url"}:
+        return text
+    raise ValueError("response_format 仅支持 b64_json 或 url")
+
+
+def _select_image_size_options(model_detail: dict, size: str | None = None, quality: str | None = None) -> tuple[str | None, str | None]:
+    requested_size = str(size or "").strip().lower()
+    requested_quality = str(quality or "").strip().lower()
+    ratios = [str(item).strip() for item in (model_detail.get("ratio") or []) if str(item).strip()]
+    resolutions = [
+        str(item.get("resolution") or "").strip()
+        for item in (model_detail.get("resolution") or [])
+        if isinstance(item, dict) and str(item.get("resolution") or "").strip()
+    ]
+
+    ratio = ratios[0] if ratios else None
+    resolution = resolutions[0] if resolutions else None
+
+    size_ratio_map = {
+        "1024x1024": "1:1",
+        "1024x1536": "2:3",
+        "1536x1024": "3:2",
+        "1024x1792": "9:16",
+        "1792x1024": "16:9",
+    }
+    if requested_size and requested_size not in {"auto", ""}:
+        mapped_ratio = size_ratio_map.get(requested_size)
+        if not mapped_ratio:
+            raise ValueError("size 暂仅支持 1024x1024、1024x1536、1536x1024、1024x1792、1792x1024 或 auto")
+        if ratios and mapped_ratio not in ratios:
+            raise ValueError(f"模型 {model_detail.get('name', '')} 不支持尺寸 {requested_size}")
+        ratio = mapped_ratio
+        try:
+            width_text, height_text = requested_size.split("x", 1)
+            max_edge = max(int(width_text), int(height_text))
+        except Exception:
+            max_edge = 1024
+        preferred_resolution = "4K" if max_edge >= 3072 else "2K" if max_edge > 1024 else "1K"
+        if resolutions:
+            resolution = preferred_resolution if preferred_resolution in resolutions else resolutions[0]
+
+    if requested_quality == "high" and resolutions:
+        resolution = "4K" if "4K" in resolutions else resolutions[-1]
+
+    return ratio, resolution
+
+
+def _extract_rita_image_urls(response: requests.Response) -> list[str]:
+    urls: list[str] = []
+    with response:
+        for event in iter_rita_sse(response):
+            choices = event.get("choices", []) or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = choice.get("delta", {}) or {}
+            content = str(delta.get("content") or "").strip()
+            if content.startswith("http"):
+                urls.append(content)
+            if delta.get("result") == "error":
+                raise RuntimeError("图像生成被上游拒绝")
+            if choice.get("finish_reason") == "stop" and urls:
+                break
+    if not urls:
+        raise RuntimeError("图像生成完成，但未拿到图片结果")
+    return urls
+
+
+def _download_image_payload(image_url: str, response_format: str) -> dict:
+    image_text = str(image_url or "").strip()
+    if not image_text:
+        raise ValueError("empty image url")
+    if response_format == "url":
+        return {"url": image_text}
+
+    response = requests.get(image_text, timeout=120)
+    response.raise_for_status()
+    return {
+        "b64_json": base64.b64encode(response.content).decode("ascii"),
+    }
+
+
+def _generate_openai_image_result(
+    requested_model: str,
+    prompt: str,
+    *,
+    size: str | None = None,
+    n: int = 1,
+    response_format: str = "b64_json",
+    quality: str | None = None,
+    client_token: str = "",
+    client_visitorid: str = "",
+) -> dict:
+    prompt_text = str(prompt or "").strip()
+    if not prompt_text:
+        raise ValueError("prompt is required")
+
+    normalized_count = _normalize_image_count(n)
+    normalized_format = _normalize_image_response_format(response_format)
+    excluded_ids = _get_cached_image_cooldown_ids()
+    last_error: Exception | None = None
+
+    while True:
+        lease = None
+        try:
+            lease = acquire_lease(
+                acm,
+                _get_runtime_origin(),
+                client_token=client_token,
+                client_visitorid=client_visitorid,
+                exclude_account_ids=excluded_ids,
+            )
+        except NoAvailableAccountError as e:
+            if last_error:
+                raise last_error
+            raise e
+
+        account_id = lease.account.id if lease.account else ""
+        if account_id and account_id in excluded_ids:
+            release_lease(acm, lease)
+            continue
+
+        try:
+            resolved_model, model_detail = _resolve_image_model_metadata(requested_model, lease.headers)
+            ratio, resolution = _select_image_size_options(model_detail, size=size, quality=quality)
+            payload = {
+                "model_type_id": int(model_detail.get("model_type_id") or 0),
+                "model_type_name": str(model_detail.get("model_type_name") or "").strip(),
+                "model_name": str(model_detail.get("name") or requested_model).strip(),
+                "type": "generate",
+                "generate": {
+                    "model_id": int(model_detail.get("id") or 0),
+                    "prompt": prompt_text,
+                    "image_num": normalized_count,
+                },
+            }
+            if ratio:
+                payload["generate"]["ratio"] = ratio
+            if resolution:
+                payload["generate"]["resolution"] = resolution
+
+            submit_result = _get_rita_gateway().submit_image_generation(lease.headers, payload)
+            submit_code = int(submit_result.get("code", 0) or 0)
+            if submit_code != 0:
+                message = str(submit_result.get("message") or submit_result.get("error") or "image generation failed")
+                quota_insufficient = submit_code == 2018 or "配额不足" in message or is_quota_exhausted_message(message)
+                if quota_insufficient and lease.account and not lease.used_client_token:
+                    _mark_image_account_cooldown(lease.account.id)
+                    excluded_ids.add(lease.account.id)
+                    release_lease(acm, lease)
+                    lease = None
+                    last_error = RuntimeError(message)
+                    continue
+                raise RuntimeError(message)
+
+            submit_data = submit_result.get("data", {}) or {}
+            parent_message_id = str(submit_data.get("parent_message_id") or "").strip()
+            if not parent_message_id:
+                raise RuntimeError("image generation accepted but parent_message_id is missing")
+
+            stream_response = _get_rita_gateway().stream_image_records(lease.headers, parent_message_id, timeout=240)
+            stream_response.raise_for_status()
+            image_urls = _extract_rita_image_urls(stream_response)
+            images = [_download_image_payload(url, normalized_format) for url in image_urls]
+
+            mark_success(
+                acm,
+                lease,
+                model=requested_model,
+                request_type="images_generate",
+                tokens_approx=max(1, len(prompt_text) // 4),
+                cost=get_cost(resolved_model),
+            )
+            if account_id:
+                _image_account_cooldowns.pop(account_id, None)
+            return {
+                "created": int(time.time()),
+                "data": images,
+                "urls": image_urls,
+                "resolved_model": resolved_model,
+                "prompt": prompt_text,
+            }
+        except requests.RequestException as e:
+            last_error = e
+            if lease:
+                mark_failure(acm, lease, str(e), model=requested_model, request_type="images_generate")
+                lease = None
+            raise
+        except ValueError as e:
+            last_error = e
+            if lease:
+                release_lease(acm, lease)
+                lease = None
+            raise
+        except Exception as e:
+            last_error = e if isinstance(e, Exception) else RuntimeError(str(e))
+            if lease:
+                if lease.account and not lease.used_client_token and ("配额不足" in str(e) or is_quota_exhausted_message(str(e))):
+                    _mark_image_account_cooldown(lease.account.id)
+                    excluded_ids.add(lease.account.id)
+                    release_lease(acm, lease)
+                    lease = None
+                    continue
+                mark_failure(acm, lease, str(e), model=requested_model, request_type="images_generate")
+                lease = None
+            raise
 
 
 def _resolve_rita_model_for_request(model: str, headers: dict | None = None) -> str:
@@ -1952,6 +2359,47 @@ def list_models():
         log(f"⚠️ Failed to fetch model catalog: {e}", "WARNING")
         status = 500 if "no accounts configured" in str(e) else 502
         return jsonify({"error": str(e)}), status
+
+
+@app.route("/v1/images/generations", methods=["POST"])
+def image_generations():
+    body = request.json or {}
+    model = str(body.get("model") or "").strip()
+    prompt = str(body.get("prompt") or "").strip()
+    if not model:
+        return jsonify({"error": {"message": "model is required", "type": "invalid_request_error"}}), 400
+    if not prompt:
+        return jsonify({"error": {"message": "prompt is required", "type": "invalid_request_error"}}), 400
+
+    try:
+        result = _generate_openai_image_result(
+            model,
+            prompt,
+            size=body.get("size"),
+            n=body.get("n", 1),
+            response_format=body.get("response_format", "b64_json"),
+            quality=body.get("quality"),
+            client_token=request.headers.get("token", ""),
+            client_visitorid=request.headers.get("visitorid", ""),
+        )
+        payload = {
+            "created": result["created"],
+            "data": [],
+        }
+        for item in result.get("data", []):
+            row = dict(item)
+            row["revised_prompt"] = prompt
+            payload["data"].append(row)
+        return jsonify(payload)
+    except ValueError as e:
+        return jsonify({"error": {"message": str(e), "type": "invalid_request_error"}}), 400
+    except requests.RequestException as e:
+        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
+    except NoAvailableAccountError:
+        return jsonify({"error": {"message": "no accounts configured", "type": "config_error"}}), 500
+    except Exception as e:
+        log(f"❌ Image generation failed: {e}", "ERROR")
+        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
 
 
 # =========================================================================

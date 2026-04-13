@@ -1,10 +1,20 @@
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+import accounts as accounts_module
 from auto_register import _build_auto_replenish_plan
 from adapters.anthropic_protocol import parse_tool_calls_from_text
 from adapters.openai_protocol import parse_tool_response, split_embedded_thinking
+from database import DB
+from services.rita_dispatch import (
+    acquire_lease,
+    disable_quota_exhausted,
+    is_quota_exhausted_message,
+    mark_success,
+)
 from services.rita_gateway import iter_rita_sse
 
 
@@ -144,7 +154,10 @@ class AutoReplenishPlanTests(unittest.TestCase):
 
 class ManualRegisterTaskTests(unittest.TestCase):
     def test_manual_register_task_logs_once_and_does_not_recurse(self):
-        import server
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
 
         task_id = "manualtest123456"
         original_task = server._manual_register_task
@@ -186,6 +199,63 @@ class ManualRegisterTaskTests(unittest.TestCase):
             self.assertIn("trigger one log", messages)
         finally:
             server._manual_register_task = original_task
+
+
+class AccountReservationTests(unittest.TestCase):
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.db = DB(Path(self._tmpdir.name) / "rita-test.db")
+        self.get_db_patch = mock.patch.object(accounts_module, "get_db", return_value=self.db)
+        self.get_db_patch.start()
+        self.manager = accounts_module.AccountManager()
+
+    def tearDown(self):
+        self.get_db_patch.stop()
+        self._tmpdir.cleanup()
+
+    def test_reserve_next_respects_min_quota_and_release(self):
+        low = self.manager.add(token="tok-low", name="low", quota_remain=1)
+        high = self.manager.add(token="tok-high", name="high", quota_remain=10)
+
+        lease = acquire_lease(self.manager, "https://www.rita.ai", required_quota=5)
+
+        self.assertEqual(lease.account.id, high.id)
+        self.assertEqual(self.manager.get(high.id).inflight_count, 1)
+        self.assertEqual(self.manager.get(low.id).inflight_count, 0)
+
+        mark_success(self.manager, lease, model="model_15", request_type="chat_completions", cost=5)
+
+        refreshed_high = self.manager.get(high.id)
+        self.assertEqual(refreshed_high.inflight_count, 0)
+        self.assertEqual(refreshed_high.quota_remain, 5)
+
+    def test_disable_quota_exhausted_soft_disables_account(self):
+        first = self.manager.add(token="tok-first", name="first", quota_remain=5)
+        second = self.manager.add(token="tok-second", name="second", quota_remain=5)
+
+        lease = acquire_lease(self.manager, "https://www.rita.ai", required_quota=1)
+        disable_quota_exhausted(self.manager, lease, error="积分不足")
+
+        disabled = self.manager.get(lease.account.id)
+        self.assertFalse(disabled.enabled)
+        self.assertEqual(disabled.quota_remain, 0)
+        self.assertEqual(disabled.disabled_reason, "quota_exhausted")
+        self.assertEqual(disabled.inflight_count, 0)
+
+        next_lease = acquire_lease(
+            self.manager,
+            "https://www.rita.ai",
+            required_quota=1,
+            exclude_account_ids={disabled.id},
+        )
+        self.assertIn(next_lease.account.id, {first.id, second.id} - {disabled.id})
+
+
+class RitaDispatchQuotaMessageTests(unittest.TestCase):
+    def test_is_quota_exhausted_message_supports_english_and_chinese(self):
+        self.assertTrue(is_quota_exhausted_message("quota insufficient for this request"))
+        self.assertTrue(is_quota_exhausted_message("当前积分不足，请稍后再试"))
+        self.assertFalse(is_quota_exhausted_message("conversation does not exist"))
 
 
 if __name__ == "__main__":

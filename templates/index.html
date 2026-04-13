@@ -185,6 +185,13 @@ tr:hover { background: rgba(99,102,241,.04); }
 .chat-msg.system { align-self: center; background: rgba(99,102,241,.1); color: var(--text2); font-size: 12px; max-width: 90%; text-align: center; }
 .chat-msg pre { white-space: pre-wrap; font-family: monospace; font-size: 12px; margin-top: 6px; }
 .chat-msg code { font-family: monospace; font-size: 12px; white-space: break-spaces; }
+.chat-image-group { display: flex; flex-direction: column; gap: 10px; }
+.chat-image-caption { font-size: 12px; color: var(--text2); }
+.chat-image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.chat-image-link { display: block; border-radius: 10px; overflow: hidden; border: 1px solid var(--border); background: rgba(255,255,255,.04); }
+.chat-image-link img { display: block; width: 100%; height: auto; }
+.chat-model-tip { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--text2); }
+.chat-model-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; border: 1px solid var(--border); background: rgba(99,102,241,.08); color: var(--accent); font-size: 11px; }
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
 .chat-input { flex: 1; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: none; min-height: 42px; max-height: 120px; font-family: inherit; }
 .chat-input:focus { outline: none; border-color: var(--accent); }
@@ -1442,7 +1449,12 @@ async function loadModels() {
     const previousValue = _selectedChatModel || sel?.value || '';
     const res = await api('GET', '/v1/models');
     _models = res.data || [];
-    sel.innerHTML = _models.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join('');
+    sel.innerHTML = _models.map(m => {
+      const ability = String(m.ability || '').toLowerCase();
+      const prefix = ability === 'image' ? '🖼️ ' : '';
+      const suffix = ability === 'image' ? ' [生图]' : '';
+      return `<option value="${esc(m.id)}">${prefix}${esc(m.name || m.id)}${suffix}</option>`;
+    }).join('');
     if (_models.length > 0) {
       const nextValue = _models.some(m => m.id === previousValue) ? previousValue : _models[0].id;
       sel.value = nextValue;
@@ -1465,6 +1477,26 @@ function onModelChange() {
   _selectedChatModel = sel?.value || '';
   const m = _models.find(x => x.id === sel.value);
   document.getElementById('curModelName').textContent = m ? (m.name || m.id) : '-';
+  const input = document.getElementById('chatInput');
+  const status = document.getElementById('chatStatus');
+  if (input) {
+    input.placeholder = m && String(m.ability || '').toLowerCase() === 'image'
+      ? '输入生图提示词... (Enter 发送)'
+      : '输入消息... (Shift+Enter 换行, Enter 发送)';
+  }
+  if (status) {
+    status.textContent = '就绪';
+    status.style.color = 'var(--green)';
+  }
+}
+
+function getChatModelMeta(modelId) {
+  return _models.find(x => x.id === modelId) || null;
+}
+
+function isImageModel(modelId) {
+  const model = getChatModelMeta(modelId);
+  return !!model && String(model.ability || '').toLowerCase() === 'image';
 }
 
 // ===================== Model Plaza =====================
@@ -1685,6 +1717,48 @@ function setChatMessageText(target, text, color) {
   target.style.color = color || '';
 }
 
+function renderChatImageMessage(target, images, prompt, modelName) {
+  target.textContent = '';
+  target.style.color = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'chat-image-group';
+
+  const caption = document.createElement('div');
+  caption.className = 'chat-image-caption';
+  caption.textContent = `${modelName || '生图模型'} 已生成 ${images.length} 张图片`;
+  wrap.appendChild(caption);
+
+  if (prompt) {
+    const promptEl = document.createElement('div');
+    promptEl.className = 'chat-model-tip';
+    const badge = document.createElement('span');
+    badge.className = 'chat-model-badge';
+    badge.textContent = 'Prompt';
+    const promptText = document.createElement('span');
+    promptText.textContent = prompt;
+    promptEl.appendChild(badge);
+    promptEl.appendChild(promptText);
+    wrap.appendChild(promptEl);
+  }
+
+  const grid = document.createElement('div');
+  grid.className = 'chat-image-grid';
+  images.forEach((url, index) => {
+    const link = document.createElement('a');
+    link.className = 'chat-image-link';
+    link.href = url;
+    link.target = '_blank';
+    link.rel = 'noreferrer';
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = `${modelName || '生成图片'} ${index + 1}`;
+    link.appendChild(img);
+    grid.appendChild(link);
+  });
+  wrap.appendChild(grid);
+  target.appendChild(wrap);
+}
+
 function appendMessage(role, content) {
   const ms = document.getElementById('chatMessages');
   const div = document.createElement('div');
@@ -1703,10 +1777,12 @@ async function sendMessage() {
   if (!text) return;
   const model = document.getElementById('chatModel').value;
   if (!model) { toast('请先选择一个模型', 'error'); return; }
+  const modelMeta = getChatModelMeta(model);
+  const imageMode = isImageModel(model);
 
   const btn = document.getElementById('chatSendBtn');
   btn.disabled = true;
-  document.getElementById('chatStatus').textContent = '思考中...';
+  document.getElementById('chatStatus').textContent = imageMode ? '生图中...' : '思考中...';
   document.getElementById('chatStatus').style.color = 'var(--yellow)';
 
   // Show user message
@@ -1717,28 +1793,46 @@ async function sendMessage() {
   const ms = document.getElementById('chatMessages');
   const placeholder = document.createElement('div');
   placeholder.className = 'chat-msg assistant';
-  setChatMessageText(placeholder, '思考中...', 'var(--text2)');
+  setChatMessageText(placeholder, imageMode ? '生图中...' : '思考中...', 'var(--text2)');
   ms.appendChild(placeholder);
   ms.scrollTop = ms.scrollHeight;
 
-  _chatConversation.push({ role: 'user', content: text });
-  trimChatConversation();
-
   try {
-    const res = await fetch('/v1/chat/completions', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: _chatConversation, stream: false }),
-    });
-    const data = await res.json();
-    if (data.error) {
-      setChatMessageText(placeholder, `错误: ${data.error.message || JSON.stringify(data.error)}`, 'var(--red)');
+    if (imageMode) {
+      const res = await fetch('/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt: text, response_format: 'url', size: '1024x1024' }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setChatMessageText(placeholder, `错误: ${data.error.message || JSON.stringify(data.error)}`, 'var(--red)');
+      } else {
+        const imageUrls = (data.data || []).map(item => item.url).filter(Boolean);
+        if (!imageUrls.length) {
+          setChatMessageText(placeholder, '错误: 已调用生图接口，但未返回图片 URL', 'var(--red)');
+        } else {
+          renderChatImageMessage(placeholder, imageUrls, text, modelMeta?.name || model);
+        }
+      }
     } else {
-      const reply = data.choices?.[0]?.message?.content || '';
-      placeholder.style.color = '';
-      renderChatMessageContent(placeholder, reply);
-      _chatConversation.push({ role: 'assistant', content: reply });
+      _chatConversation.push({ role: 'user', content: text });
       trimChatConversation();
+      const res = await fetch('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: _chatConversation, stream: false }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setChatMessageText(placeholder, `错误: ${data.error.message || JSON.stringify(data.error)}`, 'var(--red)');
+      } else {
+        const reply = data.choices?.[0]?.message?.content || '';
+        placeholder.style.color = '';
+        renderChatMessageContent(placeholder, reply);
+        _chatConversation.push({ role: 'assistant', content: reply });
+        trimChatConversation();
+      }
     }
   } catch(e) {
     setChatMessageText(placeholder, `请求失败: ${e.message}`, 'var(--red)');
