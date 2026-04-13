@@ -25,6 +25,8 @@ BASE_DIR = Path(__file__).resolve().parent
 ENV_FILE = BASE_DIR / ".env"
 ENV_EXAMPLE_FILE = BASE_DIR / ".env.example"
 PRICE_DOC_FILE = BASE_DIR / "docs" / "价格.md"
+_price_doc_cache: tuple[dict[str, int], dict[str, int], dict] | None = None
+_price_doc_cache_mtime: float | None = None
 
 from accounts import AccountManager
 import auto_register
@@ -36,6 +38,7 @@ from adapters.openai_protocol import (
     parse_tool_response as parse_tool_response_v2,
     responses_input_to_messages,
     make_responses_base,
+    split_embedded_thinking,
     split_text_chunks,
 )
 from adapters.anthropic_protocol import (
@@ -70,6 +73,8 @@ app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24).hex())
 acm = AccountManager()
 _conv_lock = Lock()
+_responses_lock = Lock()
+_responses_state: dict[str, dict] = {}
 
 # ===================== Auth Middleware =====================
 def _load_env_file_values(path: Path) -> dict:
@@ -257,17 +262,51 @@ def _get_auth_token() -> str:
 
 
 def _get_proxy_api_key() -> str:
-    """读取对外模型调用 API Key；未显式配置时回退 AUTH_TOKEN 以保持兼容。"""
+    """读取对外模型调用 API Key。"""
     try:
         row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("PROXY_API_KEY",))
         if row is not None and str(row["value"] or "").strip():
             return str(row["value"] or "").strip()
     except Exception:
         pass
-    env_proxy_key = str(os.getenv("PROXY_API_KEY", "") or "").strip()
-    if env_proxy_key:
-        return env_proxy_key
-    return _get_auth_token()
+    return str(os.getenv("PROXY_API_KEY", "") or "").strip()
+
+
+def _get_runtime_upstream_url() -> str:
+    try:
+        row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("RITA_UPSTREAM",))
+        if row is not None and str(row["value"] or "").strip():
+            return str(row["value"] or "").strip()
+    except Exception:
+        pass
+    return str(UPSTREAM_URL or "").strip()
+
+
+def _get_runtime_origin() -> str:
+    try:
+        row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("RITA_ORIGIN",))
+        if row is not None and str(row["value"] or "").strip():
+            return str(row["value"] or "").strip()
+    except Exception:
+        pass
+    return str(RITA_ORIGIN or "").strip()
+
+
+def _get_runtime_disable_ssl_verify() -> bool:
+    try:
+        row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("DISABLE_SSL_VERIFY",))
+        if row is not None:
+            return _parse_bool_value(row["value"], default=DISABLE_SSL_VERIFY)
+    except Exception:
+        pass
+    return bool(DISABLE_SSL_VERIFY)
+
+
+def _get_rita_gateway() -> RitaGateway:
+    return RitaGateway(
+        _get_runtime_upstream_url(),
+        disable_ssl_verify=_get_runtime_disable_ssl_verify(),
+    )
 
 
 def _normalize_model_price_key(value: str) -> str:
@@ -277,6 +316,7 @@ def _normalize_model_price_key(value: str) -> str:
 
 def _load_price_doc_index() -> tuple[dict[str, int], dict[str, int], dict]:
     """解析 docs/价格.md 中的模型积分表。"""
+    global _price_doc_cache, _price_doc_cache_mtime
     exact: dict[str, int] = {}
     normalized: dict[str, int] = {}
     meta = {
@@ -286,6 +326,9 @@ def _load_price_doc_index() -> tuple[dict[str, int], dict[str, int], dict]:
         "total": 0,
     }
     try:
+        current_mtime = PRICE_DOC_FILE.stat().st_mtime
+        if _price_doc_cache is not None and _price_doc_cache_mtime == current_mtime:
+            return _price_doc_cache
         lines = PRICE_DOC_FILE.read_text(encoding="utf-8").splitlines()
     except Exception as e:
         meta["error"] = str(e)
@@ -309,7 +352,9 @@ def _load_price_doc_index() -> tuple[dict[str, int], dict[str, int], dict]:
         normalized[_normalize_model_price_key(model_name)] = points
 
     meta["total"] = len(exact)
-    return exact, normalized, meta
+    _price_doc_cache = (exact, normalized, meta)
+    _price_doc_cache_mtime = current_mtime
+    return _price_doc_cache
 
 
 def _lookup_model_points(model_name: str, exact: dict[str, int], normalized: dict[str, int]) -> int | None:
@@ -340,14 +385,14 @@ def _check_auth() -> bool:
 
 def _check_proxy_auth() -> bool:
     """/v1 协议调用鉴权：支持 OpenAI Bearer 与 Anthropic x-api-key。"""
-    proxy_api_key = _get_proxy_api_key()
-    if not proxy_api_key:
-        return True
     # 管理面板首页的对话/模型请求走同源 fetch，会自动带上登录 session。
     # 这里补一个 session 兜底，避免面板已登录却仍被 /v1/* 当成外部调用拦下。
     auth_token = _get_auth_token()
     if auth_token and session.get("auth_token") == auth_token:
         return True
+    proxy_api_key = _get_proxy_api_key()
+    if not proxy_api_key:
+        return False
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer ") and auth_header[7:] == proxy_api_key:
         return True
@@ -368,7 +413,16 @@ def require_auth():
         return None
     # /v1/* proxy endpoints: check PROXY_API_KEY (OpenAI / Anthropic style)
     if path.startswith("/v1/"):
-        if _get_proxy_api_key() and not _check_proxy_auth():
+        proxy_api_key = _get_proxy_api_key()
+        if not _check_proxy_auth():
+            if not proxy_api_key:
+                return jsonify({
+                    "error": {
+                        "message": "PROXY_API_KEY not configured",
+                        "type": "config_error",
+                        "code": "proxy_api_key_missing",
+                    }
+                }), 503
             return jsonify({"error": {"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}}), 401
         return None
     # /api/* and /debug/*: require auth
@@ -568,18 +622,18 @@ def _run_manual_register_task(task_id: str, count: int, threads: int, captcha_pr
     def task_log(message: str, level: str = "INFO"):
         _append_manual_register_log(task_id, message, level)
 
-    task_log(
-        f"🚀 手动注册任务已启动，请求数量={count}，线程={threads}，打码={captcha_provider or 'yescaptcha'}",
-        "INFO",
-    )
+        task_log(
+            f"🚀 手动注册任务已启动，请求数量={count}，线程={threads}，打码={captcha_provider or 'yescaptcha'}",
+            "INFO",
+        )
     try:
         auto_register.set_thread_log_fn(task_log)
         results = auto_register.auto_register_batch(
             count=count,
             threads=threads,
             account_manager=acm,
-            upstream_url=UPSTREAM_URL,
-            origin=RITA_ORIGIN,
+            upstream_url=_get_runtime_upstream_url(),
+            origin=_get_runtime_origin(),
             captcha_provider_override=captcha_provider,
             should_stop=lambda: _manual_register_should_stop(task_id),
             on_result=lambda item: _append_manual_register_result(task_id, item),
@@ -671,7 +725,7 @@ def _ensure_conversation(headers: dict, rita_model: str, existing_chat_id: int =
     if existing_chat_id:
         return existing_chat_id
     try:
-        chat_id = rita_gateway.create_conversation(headers, rita_model)
+        chat_id = _get_rita_gateway().create_conversation(headers, rita_model)
         log(f"📝 Auto-created conversation: chat_id={chat_id}", "DEBUG")
         return chat_id
     except Exception as e:
@@ -691,15 +745,18 @@ def _make_anthropic_error(message: str, error_type: str = "invalid_request_error
 def _build_protocol_deps() -> dict:
     return {
         "acm": acm,
-        "RITA_ORIGIN": RITA_ORIGIN,
-        "rita_gateway": rita_gateway,
+        "RITA_ORIGIN": _get_runtime_origin(),
+        "rita_gateway": _get_rita_gateway(),
         "resolve_model": _resolve_rita_model_for_request,
         "get_or_create_conversation": get_or_create_conversation,
         "update_conversation_state": update_conversation_state,
+        "get_response_state": get_response_state,
+        "update_response_state": update_response_state,
         "build_rita_messages": build_rita_messages_v2,
         "inject_tool_prompt": inject_tool_prompt_v2,
         "tool_prompt_cache": _tool_prompt_cache,
         "parse_tool_response": parse_tool_response_v2,
+        "split_embedded_thinking": split_embedded_thinking,
         "log": log,
         "get_cost": get_cost,
         "acquire_lease": acquire_lease,
@@ -761,7 +818,7 @@ def _model_alias_signature(value: str) -> tuple[str, ...]:
 def _refresh_model_cache(headers: dict) -> None:
     global _models_cache, _models_cache_ts
     now = time.time()
-    upstream = rita_gateway.fetch_models(headers)
+    upstream = _get_rita_gateway().fetch_models(headers)
     data = []
     for cat in upstream.get("data", {}).get("category_models", []):
         cat_name = cat.get("name", "")
@@ -795,7 +852,7 @@ def _get_model_catalog(force_refresh: bool = False) -> dict:
         raise RuntimeError("no accounts configured")
 
     try:
-        _refresh_model_cache(acm.upstream_headers(acc, RITA_ORIGIN))
+        _refresh_model_cache(acm.upstream_headers(acc, _get_runtime_origin()))
         acm.mark_ok(acc)
         return _models_cache
     except Exception as e:
@@ -872,6 +929,29 @@ def update_conversation_state(messages: list, assistant_msg_id: str, chat_id: in
         _conversation_state[key] = {
             "chat_id": chat_id,
             "parent": assistant_msg_id,
+            "last_updated": time.time(),
+        }
+
+
+def get_response_state(response_id: str) -> dict | None:
+    response_key = str(response_id or "").strip()
+    if not response_key:
+        return None
+    with _responses_lock:
+        state = _responses_state.get(response_key)
+        return dict(state) if state else None
+
+
+def update_response_state(response_id: str, chat_id: int, parent: str | None, model: str, created_at: float):
+    response_key = str(response_id or "").strip()
+    if not response_key:
+        return
+    with _responses_lock:
+        _responses_state[response_key] = {
+            "chat_id": int(chat_id or 0),
+            "parent": str(parent or "0"),
+            "model": str(model or ""),
+            "created_at": float(created_at or time.time()),
             "last_updated": time.time(),
         }
 
@@ -1308,7 +1388,7 @@ def api_toggle_account(account_id):
 
 @app.route("/api/accounts/<account_id>/test", methods=["POST"])
 def api_test_account(account_id):
-    result = acm.test_account(account_id, UPSTREAM_URL, RITA_ORIGIN)
+    result = acm.test_account(account_id, _get_runtime_upstream_url(), _get_runtime_origin())
     return jsonify(result)
 
 @app.route("/api/accounts/test-all", methods=["POST"])
@@ -1317,7 +1397,7 @@ def api_test_all():
     results = {}
     ok_count = 0
     for a in accounts:
-        r = acm.test_account(a["id"], UPSTREAM_URL, RITA_ORIGIN)
+        r = acm.test_account(a["id"], _get_runtime_upstream_url(), _get_runtime_origin())
         results[a["id"]] = r
         if r.get("ok"):
             ok_count += 1
@@ -1342,9 +1422,9 @@ def api_refresh_account(account_id):
         )
         new_token = result["token"]
         # Update account with new token and re-enable
-        acm.reactivate_account(account_id, new_token=new_token)
+        refreshed = acm.reactivate_account(account_id, new_token=new_token)
         log(f"✅ Token refreshed for {acc.name}", "SUCCESS")
-        return jsonify({"ok": True, "account": acc.to_status()})
+        return jsonify({"ok": True, "account": refreshed.to_status() if refreshed else acc.to_status()})
     except Exception as e:
         log(f"❌ Token refresh failed for {acc.name}: {e}", "ERROR")
         return jsonify({"error": str(e)}), 500
@@ -1393,7 +1473,7 @@ def api_batch_action():
                 else:
                     results["failed"] += 1
             elif action == "test":
-                r = acm.test_account(aid, UPSTREAM_URL, RITA_ORIGIN)
+                r = acm.test_account(aid, _get_runtime_upstream_url(), _get_runtime_origin())
                 results["details"][aid] = r
                 if r.get("ok"):
                     results["success"] += 1
@@ -1461,7 +1541,7 @@ def api_run_health_check():
     ok_count = 0
     disabled_count = 0
     for a in accounts:
-        r = acm.test_account(a["id"], UPSTREAM_URL, RITA_ORIGIN)
+        r = acm.test_account(a["id"], _get_runtime_upstream_url(), _get_runtime_origin())
         results[a["id"]] = r
         if r.get("ok"):
             ok_count += 1
@@ -1828,8 +1908,8 @@ def api_auto_register():
             count=count,
             threads=threads,
             account_manager=acm,
-            upstream_url=UPSTREAM_URL,
-            origin=RITA_ORIGIN,
+            upstream_url=_get_runtime_upstream_url(),
+            origin=_get_runtime_origin(),
             captcha_provider_override=captcha_provider,
         )
     except Exception as e:
@@ -1857,7 +1937,7 @@ def health():
     return jsonify({
         "status": "ok",
         **s,
-        "upstream": UPSTREAM_URL,
+        "upstream": _get_runtime_upstream_url(),
     })
 
 
@@ -1890,10 +1970,10 @@ def list_ai_tools():
 
     try:
         r = requests.post(
-            f"{UPSTREAM_URL}/gamsai_api/v1/page_service/aiTools",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
+            f"{_get_runtime_upstream_url()}/gamsai_api/v1/page_service/aiTools",
+            headers=acm.upstream_headers(acc, _get_runtime_origin()),
             json={"language": "zh"}, timeout=15,
-            verify=not DISABLE_SSL_VERIFY,
+            verify=not _get_runtime_disable_ssl_verify(),
         )
         r.raise_for_status()
         upstream = r.json()
@@ -1934,10 +2014,10 @@ def execute_ai_tool():
             payload["image_url"] = data["image_url"]
 
         r = requests.post(
-            f"{UPSTREAM_URL}/gamsai_api/v1/page_service/aiTools/{tool_id}/execute",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
+            f"{_get_runtime_upstream_url()}/gamsai_api/v1/page_service/aiTools/{tool_id}/execute",
+            headers=acm.upstream_headers(acc, _get_runtime_origin()),
             json=payload, timeout=60,
-            verify=not DISABLE_SSL_VERIFY,
+            verify=not _get_runtime_disable_ssl_verify(),
         )
         r.raise_for_status()
         acm.mark_ok(acc)
@@ -1961,11 +2041,11 @@ def list_conversations():
 
     try:
         r = requests.post(
-            f"{UPSTREAM_URL}/aichat/conversations",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
+            f"{_get_runtime_upstream_url()}/aichat/conversations",
+            headers=acm.upstream_headers(acc, _get_runtime_origin()),
             json={"page": data.get("page", 1), "limit": data.get("limit", 20)},
             timeout=15,
-            verify=not DISABLE_SSL_VERIFY,
+            verify=not _get_runtime_disable_ssl_verify(),
         )
         r.raise_for_status()
         acm.mark_ok(acc)
@@ -1984,10 +2064,10 @@ def new_conversation():
     try:
         model = data.get("model", "model_25")
         r = requests.post(
-            f"{UPSTREAM_URL}/chatgpt/newConversation",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
+            f"{_get_runtime_upstream_url()}/chatgpt/newConversation",
+            headers=acm.upstream_headers(acc, _get_runtime_origin()),
             json={"model": resolve_rita_model(model)}, timeout=15,
-            verify=not DISABLE_SSL_VERIFY,
+            verify=not _get_runtime_disable_ssl_verify(),
         )
         r.raise_for_status()
         acm.mark_ok(acc)
@@ -2005,11 +2085,11 @@ def get_title():
         return jsonify({"error": "no accounts configured"}), 500
     try:
         r = requests.post(
-            f"{UPSTREAM_URL}/aichat/getTitle",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
+            f"{_get_runtime_upstream_url()}/aichat/getTitle",
+            headers=acm.upstream_headers(acc, _get_runtime_origin()),
             json={"chat_id": data.get("chat_id"), "messages": build_rita_messages(data.get("messages", []))},
             timeout=15,
-            verify=not DISABLE_SSL_VERIFY,
+            verify=not _get_runtime_disable_ssl_verify(),
         )
         r.raise_for_status()
         acm.mark_ok(acc)
@@ -2049,17 +2129,20 @@ def anthropic_messages_api():
 # =========================================================================
 @app.route("/debug/state", methods=["GET"])
 def debug_state():
-    with _conv_lock:
+    with _conv_lock, _responses_lock:
         return jsonify({
             "conversations": len(_conversation_state),
+            "responses": len(_responses_state),
             **acm.summary(),
-            "upstream": UPSTREAM_URL,
+            "upstream": _get_runtime_upstream_url(),
         })
 
 @app.route("/debug/clear", methods=["POST"])
 def debug_clear():
     with _conv_lock:
         _conversation_state.clear()
+    with _responses_lock:
+        _responses_state.clear()
     log("🧹 Cleared conversation state", "WARNING")
     return jsonify({"status": "ok"})
 
@@ -2067,19 +2150,25 @@ def debug_clear():
 # =========================================================================
 #  Startup
 # =========================================================================
-if __name__ == "__main__":
+def main():
     s = acm.summary()
+    runtime_upstream = _get_runtime_upstream_url()
+    runtime_origin = _get_runtime_origin()
     print("\n" + "=" * 60)
     print("🚀 rita2api starting")
-    print(f"📍 Port: {PORT}  Upstream: {UPSTREAM_URL}")
+    print(f"📍 Port: {PORT}  Upstream: {runtime_upstream}")
     print(f"🔑 Accounts: {s['total']} total, {s['active']} active, {s['disabled']} disabled")
     print(f"🌐 WebUI: http://localhost:{PORT}/")
     print("=" * 60 + "\n")
 
     # Start background token health checker
-    acm.start_health_checker(UPSTREAM_URL, RITA_ORIGIN, log_fn=log)
+    acm.start_health_checker(runtime_upstream, runtime_origin, log_fn=log)
 
     # Start auto-replenish (registers new accounts when pool runs low)
-    auto_register.start_auto_replenish(acm, UPSTREAM_URL, RITA_ORIGIN, log_fn=log)
+    auto_register.start_auto_replenish(acm, runtime_upstream, runtime_origin, log_fn=log)
 
     app.run(host=HOST, port=PORT, debug=False, threaded=True)
+
+
+if __name__ == "__main__":
+    main()

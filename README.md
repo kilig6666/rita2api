@@ -45,7 +45,7 @@ python server.py
 
 1. 打开 WebUI → **配置管理** Tab
 2. 默认管理面板密码为 `981115`，也可在 **配置管理** 中修改 `AUTH_TOKEN`
-3. 建议在 **配置管理** 中单独设置 `PROXY_API_KEY`，作为 `/v1/*` OpenAI / Anthropic 协议模型调用 API Key
+3. 建议在 **配置管理** 中显式设置 `PROXY_API_KEY`，作为 `/v1/*` OpenAI / Anthropic 协议模型调用 API Key
 4. 打开 **账号管理** Tab → 添加账号（填入 Rita token）
 5. 或者打开 **账号注册** Tab → 选择本次打码服务，再配置对应验证码参数 + 默认邮箱渠道所需配置（如 `GPTMAIL_API_KEY` / `YYDSMAIL_API_KEY` / `MOEMAIL_API_KEY`）→ 点击手动注册
 6. `yescaptcha` 需要配置 `YESCAPTCHA_KEY`；`ohmycaptcha_local` 默认使用 `http://127.0.0.1:8001` 与默认 key `ohmycaptcha-local-key`
@@ -203,8 +203,9 @@ Cookie:  token=<gosplit_token>
 
 兼容说明：
 
-- 若 `PROXY_API_KEY` 留空，当前实现会兼容回退到 `AUTH_TOKEN` 作为 `/v1/*` 调用密钥
-- 对外正式开放时，建议显式设置单独的 `PROXY_API_KEY`
+- 同源 WebUI 在已登录 session 下，可直接访问 `/v1/*`
+- 外部客户端访问 `/v1/*` 时，建议显式设置单独的 `PROXY_API_KEY`
+- 若未配置 `PROXY_API_KEY`，外部 `/v1/*` 请求会返回 `PROXY_API_KEY not configured`
 
 OpenAI 客户端调用示例：
 
@@ -226,7 +227,7 @@ curl http://localhost:10089/v1/messages \
   -d '{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hello"}]}'
 ```
 
-管理面板登录继续使用 `AUTH_TOKEN`。`PROXY_API_KEY` 留空时，可在配置页补充后再对外开放模型调用。
+管理面板登录继续使用 `AUTH_TOKEN`。建议配置独立的 `PROXY_API_KEY` 后再对外开放模型调用。
 
 ## WebUI 管理面板
 

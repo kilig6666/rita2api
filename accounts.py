@@ -16,7 +16,8 @@ from threading import Lock
 from database import get_db
 
 _KEY_FAIL_THRESHOLD = 3
-_HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "600"))
+_DEFAULT_HEALTH_CHECK_INTERVAL = int(os.getenv("HEALTH_CHECK_INTERVAL", "600"))
+_FAILURE_RETRY_COOLDOWN_SECONDS = 60
 
 # SSL verify: read from DB if available, fallback to env
 def _get_ssl_verify_disabled() -> bool:
@@ -62,6 +63,18 @@ def _coerce_non_negative_int(value, default: int) -> int:
         return max(0, int(float(value)))
     except Exception:
         return default
+
+
+def _get_health_check_interval() -> int:
+    """健康检查间隔优先读 DB 运行时配置，读不到再回退 env 默认值。"""
+    try:
+        db = get_db()
+        raw = str(db.get_config("HEALTH_CHECK_INTERVAL", "") or "").strip()
+        if raw:
+            return max(1, int(float(raw)))
+    except Exception:
+        pass
+    return max(1, _DEFAULT_HEALTH_CHECK_INTERVAL)
 
 
 def _row_to_status(row) -> dict:
@@ -284,19 +297,39 @@ class AccountManager:
             if n == 0:
                 return None, -1
 
-            for _ in range(n):
-                row = rows[self._robin_index % n]
-                self._robin_index += 1
+            start_index = self._robin_index % n
+            exhausted: list[tuple[int, Account]] = []
+
+            for offset in range(n):
+                row_index = (start_index + offset) % n
+                row = rows[row_index]
                 acc = Account(row)
                 if acc.failures < _KEY_FAIL_THRESHOLD:
-                    return acc, self._robin_index - 1
+                    self._robin_index = row_index + 1
+                    return acc, row_index
+                exhausted.append((row_index, acc))
 
-            # All exhausted — reset failures and return first
-            self._db.execute(
-                "UPDATE accounts SET failures=0, last_error='' WHERE enabled=1"
+            cooldown_before = time.time() - _FAILURE_RETRY_COOLDOWN_SECONDS
+            cooled_exhausted = [
+                item for item in exhausted
+                if (item[1].last_used or 0) <= cooldown_before
+            ]
+            fallback_pool = cooled_exhausted or exhausted
+            fallback_index, fallback_acc = min(
+                fallback_pool,
+                key=lambda item: (
+                    item[1].failures,
+                    item[1].last_used or 0,
+                    (item[0] - start_index) % n,
+                ),
             )
-            print("[AccountManager] All accounts hit failure threshold, reset all")
-            return Account(rows[0]), 0
+            self._robin_index = fallback_index + 1
+            print(
+                "[AccountManager] All accounts exceeded failure threshold, "
+                f"fallback to {fallback_acc.id} "
+                f"(failures={fallback_acc.failures}, last_used={fallback_acc.last_used})"
+            )
+            return fallback_acc, fallback_index
 
     def mark_ok(self, acc: Account):
         self._db.execute(
@@ -416,7 +449,10 @@ class AccountManager:
         t = threading.Thread(target=self._health_check_loop, daemon=True,
                              name="token-health-checker")
         t.start()
-        self._log_fn(f"Token health checker started (interval: {_HEALTH_CHECK_INTERVAL}s)", "INFO")
+        self._log_fn(
+            f"Token health checker started (interval: {_get_health_check_interval()}s)",
+            "INFO",
+        )
 
     def _health_check_loop(self):
         time.sleep(30)
@@ -425,7 +461,7 @@ class AccountManager:
                 self._run_health_check()
             except Exception as e:
                 self._log_fn(f"Health check error: {e}", "ERROR")
-            time.sleep(_HEALTH_CHECK_INTERVAL)
+            time.sleep(_get_health_check_interval())
 
     def _run_health_check(self):
         rows = self._db.fetchall("SELECT id FROM accounts WHERE enabled=1")

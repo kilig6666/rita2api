@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from adapters.anthropic_protocol import anthropic_messages_to_openai_chat
+from adapters.anthropic_protocol import anthropic_messages_to_openai_chat, build_anthropic_message_response
 
 
 class AnthropicMessagesToOpenAIChatTests(unittest.TestCase):
@@ -110,6 +110,22 @@ class AnthropicMessagesToOpenAIChatTests(unittest.TestCase):
         )
         self.assertEqual(converted["max_tokens"], 1024)
         self.assertTrue(converted["stream"])
+
+    def test_build_message_response_keeps_thinking_as_structured_block(self):
+        response = build_anthropic_message_response(
+            "claude-sonnet-4-5",
+            "<thinking>先做规划</thinking>最终答案",
+            input_tokens=10,
+            output_tokens=12,
+        )
+
+        self.assertEqual(
+            response["content"],
+            [
+                {"type": "thinking", "thinking": "先做规划"},
+                {"type": "text", "text": "最终答案"},
+            ],
+        )
 
 
 if __name__ == "__main__":

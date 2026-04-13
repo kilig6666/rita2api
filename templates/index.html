@@ -179,11 +179,12 @@ tr:hover { background: rgba(99,102,241,.04); }
 .model-select option { background: var(--card); }
 .chat-main { background: var(--card); border: 1px solid var(--border); border-radius: 10px; display: flex; flex-direction: column; overflow: hidden; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; min-height: 400px; }
-.chat-msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-break: break-word; }
+.chat-msg { max-width: 85%; padding: 10px 14px; border-radius: 12px; font-size: 13px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
 .chat-msg.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
 .chat-msg.assistant { align-self: flex-start; background: var(--assistant-bg); border-bottom-left-radius: 4px; }
 .chat-msg.system { align-self: center; background: rgba(99,102,241,.1); color: var(--text2); font-size: 12px; max-width: 90%; text-align: center; }
 .chat-msg pre { white-space: pre-wrap; font-family: monospace; font-size: 12px; margin-top: 6px; }
+.chat-msg code { font-family: monospace; font-size: 12px; white-space: break-spaces; }
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
 .chat-input { flex: 1; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: none; min-height: 42px; max-height: 120px; font-family: inherit; }
 .chat-input:focus { outline: none; border-color: var(--accent); }
@@ -655,7 +656,7 @@ th .row-cb { margin: 0; }
     <div style="font-size:12px;color:var(--text2);background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.18);padding:10px 12px;border-radius:8px;margin-bottom:12px;line-height:1.7">
       <div><strong style="color:var(--text)">AUTH_TOKEN</strong>：仅用于管理面板登录与 <code>/api/*</code> 管理接口。</div>
       <div><strong style="color:var(--text)">PROXY_API_KEY</strong>：模型调用 API Key，供外部 OpenAI / Anthropic 客户端访问 <code>/v1/*</code> 时使用。</div>
-      <div><strong style="color:var(--text)">兼容回退</strong>：若 <code>PROXY_API_KEY</code> 留空，当前版本会临时回退使用 <code>AUTH_TOKEN</code> 作为 <code>/v1/*</code> 调用密钥。</div>
+      <div><strong style="color:var(--text)">鉴权策略</strong>：同源已登录面板 session 可直接访问 <code>/v1/*</code>；对外客户端请显式配置 <code>PROXY_API_KEY</code>。</div>
     </div>
     <div class="config-search">
       <input type="text" id="configSearchInput" placeholder="搜索配置项..." oninput="filterConfig(this.value)">
@@ -887,7 +888,10 @@ async function checkAuth() {
     if (d.auth_required && !d.authenticated) {
       if (_authToken) { const ok = await doLogin(true); if (!ok) showLogin(); } else { showLogin(); }
     } else { hideLogin(); }
-  } catch(e) { hideLogin(); }
+  } catch(e) {
+    setLoginError('认证检查失败，请稍后重试');
+    showLogin();
+  }
 }
 
 async function doLogin(silent = false) {
@@ -974,6 +978,9 @@ let _accountPager = {
   total: 0,
   totalPages: 1,
 };
+let _selectedChatModel = '';
+const _chatConversationLimit = 24;
+let _modelPlazaSearchTimer = null;
 let _requestLog = {
   page: 1,
   pageSize: 20,
@@ -986,6 +993,9 @@ let _requestLog = {
   summary: {},
   breakdown: { by_request_type: [], by_model: [] },
 };
+let _requestLogBusyUntil = 0;
+let _requestLogLoading = false;
+let _requestLogAutoRefreshPending = false;
 
 // ===================== Stats =====================
 async function loadStats() {
@@ -1428,19 +1438,31 @@ async function clearAllAccounts() {
 // ===================== Chat Plaza =====================
 async function loadModels() {
   try {
+    const sel = document.getElementById('chatModel');
+    const previousValue = _selectedChatModel || sel?.value || '';
     const res = await api('GET', '/v1/models');
     _models = res.data || [];
-    const sel = document.getElementById('chatModel');
     sel.innerHTML = _models.map(m => `<option value="${esc(m.id)}">${esc(m.name || m.id)}</option>`).join('');
-    if (_models.length > 0) { sel.value = _models[0].id; onModelChange(); }
-    else { sel.innerHTML = '<option value="">无模型可用</option>'; }
+    if (_models.length > 0) {
+      const nextValue = _models.some(m => m.id === previousValue) ? previousValue : _models[0].id;
+      sel.value = nextValue;
+      _selectedChatModel = nextValue;
+      onModelChange();
+    } else {
+      _selectedChatModel = '';
+      sel.innerHTML = '<option value="">无模型可用</option>';
+      onModelChange();
+    }
   } catch(e) {
+    _selectedChatModel = '';
     document.getElementById('chatModel').innerHTML = '<option value="">加载失败</option>';
+    document.getElementById('curModelName').textContent = '-';
   }
 }
 
 function onModelChange() {
   const sel = document.getElementById('chatModel');
+  _selectedChatModel = sel?.value || '';
   const m = _models.find(x => x.id === sel.value);
   document.getElementById('curModelName').textContent = m ? (m.name || m.id) : '-';
 }
@@ -1465,8 +1487,11 @@ async function loadModelPlaza(force = false) {
 }
 
 function onModelPlazaSearch(value) {
-  _modelPlazaSearch = String(value || '').trim().toLowerCase();
-  renderModelPlaza();
+  if (_modelPlazaSearchTimer) clearTimeout(_modelPlazaSearchTimer);
+  _modelPlazaSearchTimer = setTimeout(() => {
+    _modelPlazaSearch = String(value || '').trim().toLowerCase();
+    renderModelPlaza();
+  }, 120);
 }
 
 function setModelPlazaCategory(category) {
@@ -1602,6 +1627,12 @@ function clearChat() {
   document.getElementById('chatMessages').innerHTML = '<div class="chat-msg system">💬 对话已清空</div>';
 }
 
+function trimChatConversation() {
+  if (_chatConversation.length > _chatConversationLimit) {
+    _chatConversation = _chatConversation.slice(-_chatConversationLimit);
+  }
+}
+
 function onChatKeyDown(e) {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
@@ -1609,18 +1640,61 @@ function onChatKeyDown(e) {
   }
 }
 
+function appendInlineCodeText(target, text) {
+  const value = String(text || '');
+  if (!value) return;
+  const inlineRegex = /`([^`]+)`/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = inlineRegex.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      target.appendChild(document.createTextNode(value.slice(lastIndex, match.index)));
+    }
+    const codeEl = document.createElement('code');
+    codeEl.textContent = match[1];
+    target.appendChild(codeEl);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < value.length) {
+    target.appendChild(document.createTextNode(value.slice(lastIndex)));
+  }
+}
+
+function renderChatMessageContent(target, content) {
+  target.textContent = '';
+  const value = String(content || '');
+  const blockRegex = /```([\w-]*)\n?([\s\S]*?)```/g;
+  let lastIndex = 0;
+  let match;
+  while ((match = blockRegex.exec(value)) !== null) {
+    if (match.index > lastIndex) {
+      appendInlineCodeText(target, value.slice(lastIndex, match.index));
+    }
+    const pre = document.createElement('pre');
+    pre.textContent = match[2];
+    target.appendChild(pre);
+    lastIndex = match.index + match[0].length;
+  }
+  if (lastIndex < value.length || !value) {
+    appendInlineCodeText(target, value.slice(lastIndex));
+  }
+}
+
+function setChatMessageText(target, text, color) {
+  target.textContent = String(text || '');
+  target.style.color = color || '';
+}
+
 function appendMessage(role, content) {
   const ms = document.getElementById('chatMessages');
   const div = document.createElement('div');
   div.className = 'chat-msg ' + role;
-  if (role === 'assistant') {
-    // Handle code blocks
-    content = content.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre>$2</pre>');
-    content = content.replace(/`([^`]+)`/g, '<code>$1</code>');
-  }
-  div.innerHTML = content;
+  div.style.color = '';
+  if (role === 'assistant') renderChatMessageContent(div, content);
+  else div.textContent = String(content || '');
   ms.appendChild(div);
   ms.scrollTop = ms.scrollHeight;
+  return div;
 }
 
 async function sendMessage() {
@@ -1636,18 +1710,19 @@ async function sendMessage() {
   document.getElementById('chatStatus').style.color = 'var(--yellow)';
 
   // Show user message
-  appendMessage('user', esc(text));
+  appendMessage('user', text);
   input.value = '';
 
   // Create assistant placeholder
   const ms = document.getElementById('chatMessages');
   const placeholder = document.createElement('div');
   placeholder.className = 'chat-msg assistant';
-  placeholder.innerHTML = '<span style="color:var(--text2)">思考中...</span>';
+  setChatMessageText(placeholder, '思考中...', 'var(--text2)');
   ms.appendChild(placeholder);
   ms.scrollTop = ms.scrollHeight;
 
   _chatConversation.push({ role: 'user', content: text });
+  trimChatConversation();
 
   try {
     const res = await fetch('/v1/chat/completions', {
@@ -1657,14 +1732,16 @@ async function sendMessage() {
     });
     const data = await res.json();
     if (data.error) {
-      placeholder.innerHTML = `<span style="color:var(--red)">错误: ${esc(data.error.message || JSON.stringify(data.error))}</span>`;
+      setChatMessageText(placeholder, `错误: ${data.error.message || JSON.stringify(data.error)}`, 'var(--red)');
     } else {
       const reply = data.choices?.[0]?.message?.content || '';
-      placeholder.innerHTML = reply.replace(/```(\w*)\n?([\s\S]*?)```/g, '<pre>$2</pre>').replace(/`([^`]+)`/g, '<code>$1</code>');
+      placeholder.style.color = '';
+      renderChatMessageContent(placeholder, reply);
       _chatConversation.push({ role: 'assistant', content: reply });
+      trimChatConversation();
     }
   } catch(e) {
-    placeholder.innerHTML = `<span style="color:var(--red)">请求失败: ${esc(e.message)}</span>`;
+    setChatMessageText(placeholder, `请求失败: ${e.message}`, 'var(--red)');
   } finally {
     btn.disabled = false;
     document.getElementById('chatStatus').textContent = '就绪';
@@ -1773,9 +1850,7 @@ function connectRegStream(taskId) {
   if (_regStream && _regStreamTaskId === taskId) return;
   closeRegStream();
   _regStreamTaskId = taskId;
-  const params = new URLSearchParams({ task_id: taskId });
-  if (_authToken) params.set('auth', _authToken);
-  const es = new EventSource(`/api/auto-register/stream?${params.toString()}`);
+  const es = new EventSource(`/api/auto-register/stream?task_id=${encodeURIComponent(taskId)}`);
   _regStream = es;
 
   es.addEventListener('log', (ev) => {
@@ -2121,6 +2196,7 @@ function formatRequestLogTime(ts) {
 }
 
 async function loadRequestLogs(page = _requestLog.page) {
+  _requestLogLoading = true;
   try {
     const params = new URLSearchParams({
       page: String(Math.max(1, page || 1)),
@@ -2151,6 +2227,8 @@ async function loadRequestLogs(page = _requestLog.page) {
       document.getElementById('requestLogModelSummary').innerHTML = '<div style="color:var(--red);font-size:12px">加载失败</div>';
       toast('加载请求日志失败: ' + e.message, 'error');
     }
+  } finally {
+    _requestLogLoading = false;
   }
 }
 
@@ -2167,6 +2245,7 @@ function renderRequestLogBreakdown() {
   const modelContainer = document.getElementById('requestLogModelSummary');
   const byType = _requestLog.breakdown?.by_request_type || [];
   const byModel = _requestLog.breakdown?.by_model || [];
+  bindRequestLogBreakdownEvents();
 
   if (!byType.length) {
     typeContainer.innerHTML = '<div style="color:var(--text2);font-size:12px">当前筛选下暂无数据</div>';
@@ -2175,7 +2254,8 @@ function renderRequestLogBreakdown() {
       <button
         type="button"
         title="点击按该请求类型筛选，再点一次取消"
-        onclick='applyRequestLogQuickFilterByType(${JSON.stringify(String(item.request_type || "unknown"))})'
+        data-breakdown-kind="type"
+        data-filter-value="${esc(String(item.request_type || 'unknown'))}"
         style="display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:8px 10px;background:${_requestLog.requestType === (item.request_type || "unknown") ? 'rgba(99,102,241,.12)' : 'transparent'};border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;text-align:left"
       >
         <div style="display:flex;align-items:center;gap:8px">
@@ -2196,7 +2276,8 @@ function renderRequestLogBreakdown() {
       <button
         type="button"
         title="点击按该模型筛选，再点一次取消"
-        onclick='applyRequestLogQuickFilterByModel(${JSON.stringify(String(item.model || ""))})'
+        data-breakdown-kind="model"
+        data-filter-value="${esc(String(item.model || ''))}"
         style="display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:8px 10px;background:${_requestLog.model === (item.model || "") ? 'rgba(99,102,241,.12)' : 'transparent'};border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;text-align:left"
       >
         <div style="min-width:0;flex:1">
@@ -2236,6 +2317,22 @@ function renderRequestLogTable() {
   }).join('');
 }
 
+function bindRequestLogBreakdownEvents() {
+  ['requestLogTypeSummary', 'requestLogModelSummary'].forEach(id => {
+    const container = document.getElementById(id);
+    if (!container || container.dataset.bound === '1') return;
+    container.dataset.bound = '1';
+    container.addEventListener('click', event => {
+      const button = event.target.closest('button[data-breakdown-kind]');
+      if (!button || !container.contains(button)) return;
+      const kind = button.dataset.breakdownKind || '';
+      const value = button.dataset.filterValue || '';
+      if (kind === 'type') applyRequestLogQuickFilterByType(value);
+      if (kind === 'model') applyRequestLogQuickFilterByModel(value);
+    });
+  });
+}
+
 function renderRequestLogPagination() {
   const total = _requestLog.total || 0;
   const page = _requestLog.page || 1;
@@ -2243,9 +2340,10 @@ function renderRequestLogPagination() {
   const totalPages = _requestLog.totalPages || 1;
   const start = total ? (page - 1) * pageSize + 1 : 0;
   const end = total ? Math.min(page * pageSize, total) : 0;
+  const suffix = _requestLogAutoRefreshPending ? ' · 自动刷新已延后' : '';
   document.getElementById('requestLogPageInfo').textContent = total
-    ? `${requestDateRangeLabel(_requestLog.dateRange)} · 第 ${page}/${totalPages} 页 · 显示 ${start}-${end} / 共 ${total} 条`
-    : '暂无数据';
+    ? `${requestDateRangeLabel(_requestLog.dateRange)} · 第 ${page}/${totalPages} 页 · 显示 ${start}-${end} / 共 ${total} 条${suffix}`
+    : `暂无数据${suffix}`;
   document.getElementById('requestLogPrevBtn').disabled = page <= 1;
   document.getElementById('requestLogNextBtn').disabled = page >= totalPages;
   const pageSizeEl = document.getElementById('requestLogPageSize');
@@ -2262,33 +2360,67 @@ function renderRequestLogPagination() {
   }
 }
 
+function markRequestLogInteraction() {
+  _requestLogBusyUntil = Date.now() + 12000;
+  if (_requestLogAutoRefreshPending) {
+    renderRequestLogPagination();
+  }
+}
+
+function shouldDeferRequestLogAutoRefresh() {
+  const panel = document.getElementById('panel-request-logs');
+  if (!panel || !panel.classList.contains('active')) return false;
+  if (_requestLogLoading) return true;
+  if (Date.now() < _requestLogBusyUntil) return true;
+  const active = document.activeElement;
+  return !!((active && panel.contains(active)) || panel.matches(':hover'));
+}
+
+async function refreshRequestLogsSilently() {
+  if (_activeTab !== 'request-logs') return;
+  if (shouldDeferRequestLogAutoRefresh()) {
+    _requestLogAutoRefreshPending = true;
+    renderRequestLogPagination();
+    return;
+  }
+  _requestLogAutoRefreshPending = false;
+  await loadRequestLogs(_requestLog.page);
+}
+
 function applyRequestLogFilters() {
+  markRequestLogInteraction();
   _requestLog.dateRange = document.getElementById('requestLogDateRange')?.value || 'all';
   _requestLog.requestType = document.getElementById('requestLogType')?.value || '';
   _requestLog.model = (document.getElementById('requestLogModel')?.value || '').trim();
   _requestLog.page = 1;
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(1);
 }
 
 function applyRequestLogQuickFilterByType(requestType) {
+  markRequestLogInteraction();
   const nextType = String(requestType || '').trim();
   _requestLog.requestType = _requestLog.requestType === nextType ? '' : nextType;
   _requestLog.page = 1;
   const el = document.getElementById('requestLogType');
   if (el) el.value = _requestLog.requestType;
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(1);
 }
 
 function applyRequestLogQuickFilterByModel(model) {
+  markRequestLogInteraction();
   const nextModel = String(model || '').trim();
   _requestLog.model = _requestLog.model === nextModel ? '' : nextModel;
   _requestLog.page = 1;
   const el = document.getElementById('requestLogModel');
   if (el) el.value = _requestLog.model;
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(1);
 }
 
 function resetRequestLogFilters() {
+  markRequestLogInteraction();
   _requestLog.dateRange = 'all';
   _requestLog.requestType = '';
   _requestLog.model = '';
@@ -2296,19 +2428,24 @@ function resetRequestLogFilters() {
   document.getElementById('requestLogDateRange').value = 'all';
   document.getElementById('requestLogType').value = '';
   document.getElementById('requestLogModel').value = '';
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(1);
 }
 
 function changeRequestLogPageSize(value) {
+  markRequestLogInteraction();
   const parsed = parseInt(String(value || '20'), 10);
   _requestLog.pageSize = [20, 50, 100].includes(parsed) ? parsed : 20;
   _requestLog.page = 1;
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(1);
 }
 
 function changeRequestLogPage(page) {
+  markRequestLogInteraction();
   const nextPage = Math.max(1, Math.min(page, _requestLog.totalPages || 1));
   _requestLog.page = nextPage;
+  _requestLogAutoRefreshPending = false;
   loadRequestLogs(nextPage);
 }
 
@@ -2335,7 +2472,7 @@ const CONFIG_DESC = {
   'PORT': 'Flask 服务监听端口；修改后通常需要重启服务生效',
   'DEBUG': 'Flask Debug 开关；修改后通常需要重启服务生效',
   'AUTH_TOKEN': '管理面板与 /api/* 管理接口登录密码；默认 981115',
-  'PROXY_API_KEY': '模型调用 API Key，供外部 OpenAI / Anthropic 协议客户端访问 /v1 接口时使用；留空时当前版本会兼容回退到 AUTH_TOKEN',
+  'PROXY_API_KEY': '模型调用 API Key，供外部 OpenAI / Anthropic 协议客户端访问 /v1 接口时使用；同源面板已登录 session 也可访问',
   'DISABLE_SSL_VERIFY': '是否跳过上游 SSL 证书验证（解决证书域名不匹配问题）',
   'HEALTH_CHECK_INTERVAL': '后台健康检查间隔时间（秒），默认 600',
   'AUTO_REGISTER_ENABLED': '启用后，当活跃账号低于最低数量时自动注册新账号',
@@ -2747,7 +2884,7 @@ setInterval(() => {
   if (!document.getElementById('loginOverlay').classList.contains('show')) {
     if (_activeTab === 'accounts') loadAccounts();
     if (_activeTab === 'register') loadRegConfig();
-    if (_activeTab === 'request-logs') loadRequestLogs();
+    if (_activeTab === 'request-logs') refreshRequestLogsSilently();
     if (_activeTab === 'chat') {} // Don't auto-reload chat
   }
 }, 30000);

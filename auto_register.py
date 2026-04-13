@@ -67,6 +67,7 @@ GOSPLIT_API = "https://accountapi.gosplit.net"
 AUTO_REGISTER_ENABLED = os.getenv("AUTO_REGISTER_ENABLED", "0") == "1"
 AUTO_REGISTER_MIN_ACTIVE = int(os.getenv("AUTO_REGISTER_MIN_ACTIVE", "2"))
 AUTO_REGISTER_BATCH = int(os.getenv("AUTO_REGISTER_BATCH", "1"))
+AUTO_REGISTER_MIN_QUOTA = int(os.getenv("AUTO_REGISTER_MIN_QUOTA", "50"))
 AUTO_REGISTER_PASSWORD = os.getenv("AUTO_REGISTER_PASSWORD", "@qazwsx123456")
 
 # ===================== Logging =====================
@@ -252,6 +253,15 @@ def _get_mail_provider_missing_keys(mail_provider: str, cfg: dict | None = None)
     return missing
 
 
+def _coerce_int(value, default: int) -> int:
+    if value in (None, ""):
+        return default
+    try:
+        return int(float(value))
+    except Exception:
+        return default
+
+
 _moemail_rr_lock = threading.Lock()
 _moemail_rr_cursor = 0
 
@@ -358,8 +368,9 @@ def _get_live_config() -> dict:
             "REGISTER_PROXY": db.get_config("REGISTER_PROXY") or REGISTER_PROXY,
             "MAIL_USE_PROXY": db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY,
             "AUTO_REGISTER_ENABLED": db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED,
-            "AUTO_REGISTER_MIN_ACTIVE": int(db.get_config("AUTO_REGISTER_MIN_ACTIVE") or AUTO_REGISTER_MIN_ACTIVE),
-            "AUTO_REGISTER_BATCH": int(db.get_config("AUTO_REGISTER_BATCH") or AUTO_REGISTER_BATCH),
+            "AUTO_REGISTER_MIN_ACTIVE": _coerce_int(db.get_config("AUTO_REGISTER_MIN_ACTIVE"), AUTO_REGISTER_MIN_ACTIVE),
+            "AUTO_REGISTER_BATCH": _coerce_int(db.get_config("AUTO_REGISTER_BATCH"), AUTO_REGISTER_BATCH),
+            "AUTO_REGISTER_MIN_QUOTA": _coerce_int(db.get_config("AUTO_REGISTER_MIN_QUOTA"), AUTO_REGISTER_MIN_QUOTA),
             "AUTO_REGISTER_PASSWORD": db.get_config("AUTO_REGISTER_PASSWORD") or AUTO_REGISTER_PASSWORD,
             "DISABLE_SSL_VERIFY": db.get_config("DISABLE_SSL_VERIFY", "0") == "1" or _DISABLE_SSL_VERIFY,
         }
@@ -382,9 +393,41 @@ def _get_live_config() -> dict:
             "AUTO_REGISTER_ENABLED": AUTO_REGISTER_ENABLED,
             "AUTO_REGISTER_MIN_ACTIVE": AUTO_REGISTER_MIN_ACTIVE,
             "AUTO_REGISTER_BATCH": AUTO_REGISTER_BATCH,
+            "AUTO_REGISTER_MIN_QUOTA": AUTO_REGISTER_MIN_QUOTA,
             "AUTO_REGISTER_PASSWORD": AUTO_REGISTER_PASSWORD,
             "DISABLE_SSL_VERIFY": _DISABLE_SSL_VERIFY,
         }
+
+
+def _build_auto_replenish_plan(summary: dict, cfg: dict) -> dict:
+    active = max(0, int(summary.get("active", 0) or 0))
+    total_quota = max(0, int(summary.get("total_quota", 0) or 0))
+    min_active = max(0, _coerce_int(cfg.get("AUTO_REGISTER_MIN_ACTIVE"), AUTO_REGISTER_MIN_ACTIVE))
+    min_quota = max(0, _coerce_int(cfg.get("AUTO_REGISTER_MIN_QUOTA"), AUTO_REGISTER_MIN_QUOTA))
+    batch_size = max(0, _coerce_int(cfg.get("AUTO_REGISTER_BATCH"), AUTO_REGISTER_BATCH))
+
+    need_by_active = max(0, min_active - active)
+    need_by_quota = 1 if total_quota < min_quota else 0
+    requested = max(need_by_active, need_by_quota)
+    to_create = min(requested, batch_size) if batch_size > 0 else 0
+
+    reasons = []
+    if need_by_active > 0:
+        reasons.append(f"active {active} < min_active {min_active}")
+    if need_by_quota > 0:
+        reasons.append(f"total_quota {total_quota} < min_quota {min_quota}")
+
+    return {
+        "active": active,
+        "total_quota": total_quota,
+        "min_active": min_active,
+        "min_quota": min_quota,
+        "batch_size": batch_size,
+        "requested": requested,
+        "to_create": to_create,
+        "should_replenish": requested > 0 and to_create > 0,
+        "reason_text": " | ".join(reasons),
+    }
 
 
 # ===================== GPTMail — Temporary Email =====================
@@ -1508,21 +1551,26 @@ def start_auto_replenish(account_manager, upstream_url: str, origin: str,
             try:
                 # Re-read config each iteration so DB changes are picked up
                 live_cfg = _get_live_config()
-                min_active = live_cfg["AUTO_REGISTER_MIN_ACTIVE"]
-                batch_size = live_cfg["AUTO_REGISTER_BATCH"]
 
                 with _replenish_lock:
                     summary = account_manager.summary()
-                    active = summary.get("active", 0)
+                    plan = _build_auto_replenish_plan(summary, live_cfg)
 
-                    if active < min_active:
-                        need = min_active - active
-                        to_create = min(need, batch_size)
-                        _log(f"⚠️ Active accounts ({active}) below minimum ({min_active}), "
-                             f"registering {to_create} new account(s)...", "WARNING")
-                        auto_register_batch(to_create, account_manager, upstream_url, origin)
+                    if plan["should_replenish"]:
+                        _log(
+                            "⚠️ Auto-replenish triggered: "
+                            f"{plan['reason_text']} | batch={plan['batch_size']} | create={plan['to_create']}",
+                            "WARNING",
+                        )
+                        auto_register_batch(plan["to_create"], account_manager, upstream_url, origin)
                     else:
-                        _log(f"✅ Active accounts: {active} (min: {min_active})", "DEBUG")
+                        _log(
+                            "✅ Auto-replenish idle: "
+                            f"active={plan['active']}/{plan['min_active']} | "
+                            f"quota={plan['total_quota']}/{plan['min_quota']} | "
+                            f"batch={plan['batch_size']}",
+                            "DEBUG",
+                        )
             except Exception as e:
                 _log(f"❌ Auto-replenish error: {e}", "ERROR")
 
@@ -1555,8 +1603,9 @@ def check_config(captcha_provider_override: str = "") -> dict:
         register_proxy = db.get_config("REGISTER_PROXY") or REGISTER_PROXY
         mail_use_proxy = db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY
         auto_enabled = db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED
-        min_active = int(db.get_config("AUTO_REGISTER_MIN_ACTIVE") or AUTO_REGISTER_MIN_ACTIVE)
-        batch_size = int(db.get_config("AUTO_REGISTER_BATCH") or AUTO_REGISTER_BATCH)
+        min_active = _coerce_int(db.get_config("AUTO_REGISTER_MIN_ACTIVE"), AUTO_REGISTER_MIN_ACTIVE)
+        min_total_quota = _coerce_int(db.get_config("AUTO_REGISTER_MIN_QUOTA"), AUTO_REGISTER_MIN_QUOTA)
+        batch_size = _coerce_int(db.get_config("AUTO_REGISTER_BATCH"), AUTO_REGISTER_BATCH)
     except Exception:
         # Fallback to env vars if DB is unavailable
         yescaptcha_key = YESCAPTCHA_KEY
@@ -1575,6 +1624,7 @@ def check_config(captcha_provider_override: str = "") -> dict:
         mail_use_proxy = MAIL_USE_PROXY
         auto_enabled = AUTO_REGISTER_ENABLED
         min_active = AUTO_REGISTER_MIN_ACTIVE
+        min_total_quota = AUTO_REGISTER_MIN_QUOTA
         batch_size = AUTO_REGISTER_BATCH
 
     provider = _normalize_mail_provider(default_provider)
@@ -1653,6 +1703,7 @@ def check_config(captcha_provider_override: str = "") -> dict:
         "mail_use_proxy": bool(mail_use_proxy),
         "recaptcha_sitekey": RECAPTCHA_SITEKEY,
         "min_active_accounts": min_active,
+        "min_total_quota": min_total_quota,
         "batch_size": batch_size,
         "ready": bool((not captcha_missing) and bool(recaptcha_provider_cfg["client_key"]) and provider_ready),
     }

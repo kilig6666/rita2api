@@ -28,6 +28,7 @@ _TOOL_PROMPT_TMPL = (
     "{query}"
 )
 _CODE_FENCE_RE = re.compile(r"^```(?:json|JSON)?\s*|\s*```$", re.DOTALL)
+_THINKING_TAG_RE = re.compile(r"<thinking>(.*?)</thinking>", re.DOTALL | re.IGNORECASE)
 
 
 def extract_text(content: JsonValue) -> str:
@@ -222,6 +223,25 @@ def parse_tool_response(raw: JsonValue) -> JsonDict:
             return {"type": "tool_calls", "calls": tool_calls}
 
     return {"type": "text", "text": raw}
+
+
+def split_embedded_thinking(raw: JsonValue) -> tuple[str, list[str]]:
+    """提取 `<thinking>...</thinking>` 片段，并返回去标签后的正文。
+
+    约定：
+    - thinking 片段按出现顺序返回；
+    - 正文会移除 thinking 标签并做轻量空白收口；
+    - 非字符串输入先走 `extract_text`。
+    """
+
+    text = raw if isinstance(raw, str) else extract_text(raw)
+    if not text:
+        return "", []
+
+    thoughts = [match.strip() for match in _THINKING_TAG_RE.findall(text) if match and match.strip()]
+    visible = _THINKING_TAG_RE.sub("", text)
+    visible = re.sub(r"\n{3,}", "\n\n", visible).strip()
+    return visible, thoughts
 
 
 def build_rita_messages(messages: Sequence[JsonDict]) -> list[JsonDict]:
@@ -541,8 +561,14 @@ def make_responses_base(
     created: float,
     instructions: JsonValue = None,
     status: str = "completed",
+    request_options: JsonDict | None = None,
 ) -> JsonDict:
     """生成 Responses API 共用骨架。"""
+
+    options = request_options or {}
+    max_output_tokens = options.get("max_output_tokens")
+    if max_output_tokens is None:
+        max_output_tokens = options.get("max_tokens")
 
     return {
         "id": resp_id,
@@ -551,15 +577,15 @@ def make_responses_base(
         "status": status,
         "model": model,
         "output": [],
-        "parallel_tool_calls": True,
-        "tool_choice": "auto",
+        "parallel_tool_calls": bool(options.get("parallel_tool_calls", True)),
+        "tool_choice": options.get("tool_choice", "auto"),
         "tools": [],
-        "temperature": 1.0,
-        "top_p": 1.0,
-        "max_output_tokens": None,
-        "truncation": "disabled",
+        "temperature": options.get("temperature", 1.0),
+        "top_p": options.get("top_p", 1.0),
+        "max_output_tokens": max_output_tokens,
+        "truncation": options.get("truncation", "disabled"),
         "instructions": instructions,
-        "metadata": {},
+        "metadata": options.get("metadata", {}) or {},
         "incomplete_details": None,
         "error": None,
         "usage": None,
@@ -583,5 +609,6 @@ __all__ = [
     "make_responses_base",
     "parse_tool_response",
     "responses_input_to_messages",
+    "split_embedded_thinking",
     "split_text_chunks",
 ]

@@ -11,6 +11,16 @@ from flask import Response, jsonify
 JsonDict = dict[str, Any]
 
 
+def _chat_usage(messages: list, text: str = "") -> dict:
+    prompt_tokens = max(0, sum(len(str(msg.get("content", ""))) for msg in messages) // 4)
+    completion_tokens = max(0, len(text or "") // 4)
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": prompt_tokens + completion_tokens,
+    }
+
+
 def _responses_usage(messages: list, text: str = "") -> dict:
     input_tokens = max(0, sum(len(str(m.get("content", ""))) for m in messages) // 4)
     output_tokens = max(0, len(text or "") // 4)
@@ -41,12 +51,41 @@ def _chat_tokens(messages: list, text: str = "") -> int:
     return max(0, sum(len(str(msg.get("content", ""))) for msg in messages) + len(text or "")) // 4
 
 
+def _responses_reasoning_items(thinking_parts: list[str]) -> list[dict]:
+    items = []
+    for index, thinking in enumerate(thinking_parts or []):
+        items.append({
+            "id": f"rs_{int(time.time() * 1000)}_{index}",
+            "type": "reasoning",
+            "status": "completed",
+            "summary": [{"type": "summary_text", "text": thinking}],
+        })
+    return items
+
+
+def _error_response(message: str, error_type: str, status: int):
+    return jsonify({"error": {"message": str(message or ""), "type": error_type}}), status
+
+
+def _map_request_exception(exc: Exception):
+    if isinstance(exc, requests.Timeout):
+        return _error_response(str(exc), "timeout_error", 504)
+    if isinstance(exc, requests.ConnectionError):
+        return _error_response(str(exc), "upstream_connection_error", 502)
+    if isinstance(exc, requests.HTTPError):
+        status = getattr(exc.response, "status_code", 502) or 502
+        error_type = "upstream_http_error" if status >= 500 else "invalid_request_error"
+        return _error_response(str(exc), error_type, status if status < 600 else 502)
+    return _error_response(str(exc), "upstream_error", 502)
+
+
 def handle_chat_completions_api(request, deps: JsonDict):
     data = request.json or {}
     messages = data.get("messages", [])
     model = data.get("model", "gpt-4o")
     stream = bool(data.get("stream", False))
     client_tools = data.get("tools", []) or []
+    client_tool_choice = data.get("tool_choice", "auto")
     request_type = "chat_completions"
 
     deps["log"](
@@ -76,7 +115,7 @@ def handle_chat_completions_api(request, deps: JsonDict):
         chat_id, parent = deps["get_or_create_conversation"](messages)
         rita_messages = deps["build_rita_messages"](messages)
 
-        if client_tools and rita_messages:
+        if client_tools and client_tool_choice != "none" and rita_messages:
             last_text = rita_messages[-1]["text"]
             rita_messages[-1]["text"] = deps["inject_tool_prompt"](last_text, client_tools, deps["tool_prompt_cache"])
             deps["log"](f"🔧 tool prompt injected ({len(client_tools)} tools)", "DEBUG")
@@ -210,7 +249,7 @@ def handle_chat_completions_api(request, deps: JsonDict):
                     yield "data: [DONE]\n\n"
                     return
 
-                final_text = parsed.get("text", collected.get("content", ""))
+                final_text, _thinking_parts = deps["split_embedded_thinking"](parsed.get("text", collected.get("content", "")))
                 for piece in deps["split_text_chunks"](final_text, 80):
                     chunk = {
                         "id": cid,
@@ -286,7 +325,7 @@ def handle_chat_completions_api(request, deps: JsonDict):
 
                 if captured_msg_id:
                     deps["update_conversation_state"](messages, captured_msg_id, chat_id)
-                final_text = "".join(output_parts)
+                final_text, _thinking_parts = deps["split_embedded_thinking"]("".join(output_parts))
                 deps["mark_success"](
                     deps["acm"],
                     lease,
@@ -343,9 +382,11 @@ def handle_chat_completions_api(request, deps: JsonDict):
                         "message": {"role": "assistant", "content": None, "tool_calls": oai_tool_calls},
                         "finish_reason": "tool_calls",
                     }],
-                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    "usage": _chat_usage(messages, content),
                 })
-            content = parsed.get("text", content)
+            content, _thinking_parts = deps["split_embedded_thinking"](parsed.get("text", content))
+        else:
+            content, _thinking_parts = deps["split_embedded_thinking"](content)
 
         deps["mark_success"](
             deps["acm"],
@@ -361,17 +402,17 @@ def handle_chat_completions_api(request, deps: JsonDict):
             "created": created_ts,
             "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            "usage": _chat_usage(messages, content),
         })
 
     except requests.RequestException as e:
         deps["log"](f"❌ Request error: {e}", "ERROR")
         deps["mark_failure"](deps["acm"], lease, str(e), model=model, request_type=request_type)
-        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
+        return _map_request_exception(e)
     except Exception as e:
         deps["log"](f"❌ Unexpected error: {e}", "ERROR")
         deps["mark_failure"](deps["acm"], lease, str(e), model=model, request_type=request_type)
-        return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
+        return _error_response(str(e), "internal_error", 500)
 
 
 def handle_anthropic_count_tokens(request, deps: JsonDict):
@@ -393,7 +434,9 @@ def handle_anthropic_messages_api(request, deps: JsonDict):
     converted = deps["anthropic_messages_to_openai_chat"](body)
     messages = converted.get("messages", [])
     client_tools = converted.get("tools", [])
+    client_tool_choice = converted.get("tool_choice", "auto")
     stream = bool(body.get("stream", False))
+    wants_structured_thinking = bool(body.get("thinking"))
 
     if not messages:
         return deps["make_anthropic_error"]("messages is required")
@@ -415,7 +458,7 @@ def handle_anthropic_messages_api(request, deps: JsonDict):
         rita_model = deps["resolve_model"](requested_model, lease.headers)
         chat_id, parent = deps["get_or_create_conversation"](messages)
         rita_messages = deps["build_rita_messages"](messages)
-        if client_tools and rita_messages:
+        if client_tools and client_tool_choice != "none" and rita_messages:
             last_text = rita_messages[-1]["text"]
             rita_messages[-1]["text"] = deps["inject_tool_prompt"](last_text, client_tools, deps["tool_prompt_cache"])
             deps["log"](f"🔧 anthropic tool prompt injected ({len(client_tools)} tools)", "DEBUG")
@@ -484,7 +527,7 @@ def handle_anthropic_messages_api(request, deps: JsonDict):
         input_tokens = int(deps["estimate_anthropic_tokens"](body).get("input_tokens", 0))
         response_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 
-        if stream and client_tools:
+        if stream and (client_tools or wants_structured_thinking):
             collected = deps["collect_rita_response"](resp)
             if collected.get("message_id"):
                 deps["update_conversation_state"](messages, collected["message_id"], chat_id)
@@ -581,7 +624,13 @@ def handle_anthropic_messages_api(request, deps: JsonDict):
 
     except requests.RequestException as e:
         deps["mark_failure"](deps["acm"], lease, str(e), model=requested_model, request_type=request_type)
-        return deps["make_anthropic_error"](str(e), "api_error", 502)
+        mapped, status = _map_request_exception(e)
+        payload = mapped.get_json() if hasattr(mapped, "get_json") else {}
+        return deps["make_anthropic_error"](
+            payload.get("error", {}).get("message", str(e)),
+            "api_error",
+            status,
+        )
     except Exception as e:
         deps["mark_failure"](deps["acm"], lease, str(e), model=requested_model, request_type=request_type)
         deps["log"](f"❌ Anthropic messages unexpected error: {e}", "ERROR")
@@ -594,6 +643,19 @@ def handle_responses_api(request, deps: JsonDict):
     stream = bool(data.get("stream", False))
     instructions = data.get("instructions")
     client_tools = data.get("tools", []) or []
+    client_tool_choice = data.get("tool_choice", "auto")
+    request_options = {
+        "tool_choice": client_tool_choice,
+        "parallel_tool_calls": data.get("parallel_tool_calls", True),
+        "temperature": data.get("temperature", 1.0),
+        "top_p": data.get("top_p", 1.0),
+        "max_output_tokens": data.get("max_output_tokens"),
+        "max_tokens": data.get("max_tokens"),
+        "truncation": data.get("truncation", "disabled"),
+        "metadata": data.get("metadata", {}) or {},
+        "previous_response_id": data.get("previous_response_id"),
+        "reasoning": data.get("reasoning"),
+    }
     request_type = "responses"
 
     messages = deps["responses_input_to_messages"](data)
@@ -618,19 +680,26 @@ def handle_responses_api(request, deps: JsonDict):
     try:
         rita_model = deps["resolve_model"](model, lease.headers)
         rita_messages = deps["build_rita_messages"](messages)
-        if client_tools and rita_messages:
+        if client_tools and client_tool_choice != "none" and rita_messages:
             last_text = rita_messages[-1]["text"]
             rita_messages[-1]["text"] = deps["inject_tool_prompt"](last_text, client_tools, deps["tool_prompt_cache"])
             deps["log"](f"🔧 responses tool prompt injected ({len(client_tools)} tools)", "DEBUG")
 
-        chat_id = deps["ensure_conversation"](lease.headers, rita_model, 0)
+        previous_response_id = str(data.get("previous_response_id") or "").strip()
+        previous_state = deps["get_response_state"](previous_response_id) if previous_response_id else None
+        if previous_state:
+            chat_id = deps["ensure_conversation"](lease.headers, rita_model, int(previous_state.get("chat_id") or 0))
+            parent = str(previous_state.get("parent") or "0")
+        else:
+            chat_id = deps["ensure_conversation"](lease.headers, rita_model, 0)
+            parent = "0"
         payload = {
             "model": rita_model,
             "messages": rita_messages,
             "online": 0,
             "model_type_id": 0,
             "chat_id": chat_id,
-            "parent": "0",
+            "parent": parent,
         }
         resp = deps["rita_gateway"].request_completion_stream(lease.headers, payload)
 
@@ -640,14 +709,34 @@ def handle_responses_api(request, deps: JsonDict):
                 err = resp.json()
                 if err.get("code") and err.get("code") != 0:
                     err_msg = err.get("error") or err.get("message") or "upstream error"
-                    deps["mark_failure"](
-                        deps["acm"],
-                        lease,
-                        str(err_msg),
-                        model=model,
-                        request_type=request_type,
-                    )
-                    return jsonify({"error": {"message": str(err_msg), "type": "upstream_error"}}), 502
+                    if deps["should_reset_conversation"](err_msg):
+                        chat_id = deps["ensure_conversation"](lease.headers, rita_model, 0)
+                        payload["chat_id"] = chat_id
+                        payload["parent"] = "0"
+                        resp = deps["rita_gateway"].request_completion_stream(lease.headers, payload)
+                        ct = resp.headers.get("content-type", "")
+                        if "application/json" in ct:
+                            retry_err = resp.json()
+                            retry_code = retry_err.get("code", 0)
+                            if retry_code and retry_code != 0:
+                                retry_msg = retry_err.get("error") or retry_err.get("message") or err_msg
+                                deps["mark_failure"](
+                                    deps["acm"],
+                                    lease,
+                                    str(retry_msg),
+                                    model=model,
+                                    request_type=request_type,
+                                )
+                                return jsonify({"error": {"message": str(retry_msg), "type": "upstream_error"}}), 502
+                    else:
+                        deps["mark_failure"](
+                            deps["acm"],
+                            lease,
+                            str(err_msg),
+                            model=model,
+                            request_type=request_type,
+                        )
+                        return jsonify({"error": {"message": str(err_msg), "type": "upstream_error"}}), 502
             except Exception:
                 pass
 
@@ -664,11 +753,13 @@ def handle_responses_api(request, deps: JsonDict):
                 "content": [{"type": "output_text", "text": text, "annotations": []}],
             }
 
-        if stream and client_tools:
+        if stream and (client_tools or request_options.get("reasoning")):
             collected = deps["collect_rita_response"](resp)
             parsed = deps["parse_tool_response"](collected.get("content", ""))
-            content_text = parsed.get("text", collected.get("content", "")) if isinstance(parsed, dict) else collected.get("content", "")
+            raw_text = parsed.get("text", collected.get("content", "")) if isinstance(parsed, dict) else collected.get("content", "")
+            content_text, thinking_parts = deps["split_embedded_thinking"](raw_text)
             usage = _responses_usage(messages, content_text)
+            usage["output_tokens_details"]["reasoning_tokens"] = sum(max(0, len(item) // 4) for item in thinking_parts)
             deps["mark_success"](
                 deps["acm"],
                 lease,
@@ -680,33 +771,40 @@ def handle_responses_api(request, deps: JsonDict):
 
             def gen_tool_stream():
                 seq = 0
-                base = deps["make_responses_base"](resp_id, model, created, instructions, "in_progress")
+                base = deps["make_responses_base"](resp_id, model, created, instructions, "in_progress", request_options)
                 yield f"event: response.created\ndata: {json.dumps({'type':'response.created','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"; seq += 1
                 yield f"event: response.in_progress\ndata: {json.dumps({'type':'response.in_progress','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"; seq += 1
+                reasoning_items = _responses_reasoning_items(thinking_parts)
+                for output_index, item in enumerate(reasoning_items):
+                    yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':output_index,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
+                    yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':output_index,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
                 if parsed.get("type") == "tool_calls":
                     output_items = _responses_function_call_items(parsed.get("calls", []))
-                    for output_index, item in enumerate(output_items):
+                    for output_index, item in enumerate(output_items, start=len(reasoning_items)):
                         yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':output_index,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
                         yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':output_index,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
-                    final = deps["make_responses_base"](resp_id, model, created, instructions, "completed")
-                    final["output"] = output_items
+                    final = deps["make_responses_base"](resp_id, model, created, instructions, "completed", request_options)
+                    final["output"] = [*reasoning_items, *output_items]
                     final["usage"] = usage
                     final["tools"] = client_tools
+                    deps["update_response_state"](resp_id, chat_id, collected.get("message_id"), model, created)
                     yield f"event: response.completed\ndata: {json.dumps({'type':'response.completed','sequence_number':seq,'response':final}, ensure_ascii=False)}\n\n"
                     return
 
                 item = make_message_item(content_text, collected.get("message_id"))
-                yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':0,'item': {'id': item['id'], 'type': 'message', 'role': 'assistant', 'status': 'in_progress', 'content': []}}, ensure_ascii=False)}\n\n"; seq += 1
-                yield f"event: response.content_part.added\ndata: {json.dumps({'type':'response.content_part.added','sequence_number':seq,'item_id':item['id'],'output_index':0,'content_index':0,'part': {'type': 'output_text', 'text': '', 'annotations': []}}, ensure_ascii=False)}\n\n"; seq += 1
+                output_index = len(reasoning_items)
+                yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':output_index,'item': {'id': item['id'], 'type': 'message', 'role': 'assistant', 'status': 'in_progress', 'content': []}}, ensure_ascii=False)}\n\n"; seq += 1
+                yield f"event: response.content_part.added\ndata: {json.dumps({'type':'response.content_part.added','sequence_number':seq,'item_id':item['id'],'output_index':output_index,'content_index':0,'part': {'type': 'output_text', 'text': '', 'annotations': []}}, ensure_ascii=False)}\n\n"; seq += 1
                 for piece in deps["split_text_chunks"](content_text, 80):
-                    yield f"event: response.output_text.delta\ndata: {json.dumps({'type':'response.output_text.delta','sequence_number':seq,'item_id':item['id'],'output_index':0,'content_index':0,'delta':piece}, ensure_ascii=False)}\n\n"; seq += 1
-                yield f"event: response.output_text.done\ndata: {json.dumps({'type':'response.output_text.done','sequence_number':seq,'item_id':item['id'],'output_index':0,'content_index':0,'text':content_text}, ensure_ascii=False)}\n\n"; seq += 1
-                yield f"event: response.content_part.done\ndata: {json.dumps({'type':'response.content_part.done','sequence_number':seq,'item_id':item['id'],'output_index':0,'content_index':0,'part': item['content'][0]}, ensure_ascii=False)}\n\n"; seq += 1
-                yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':0,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
-                final = deps["make_responses_base"](resp_id, model, created, instructions, "completed")
-                final["output"] = [item]
+                    yield f"event: response.output_text.delta\ndata: {json.dumps({'type':'response.output_text.delta','sequence_number':seq,'item_id':item['id'],'output_index':output_index,'content_index':0,'delta':piece}, ensure_ascii=False)}\n\n"; seq += 1
+                yield f"event: response.output_text.done\ndata: {json.dumps({'type':'response.output_text.done','sequence_number':seq,'item_id':item['id'],'output_index':output_index,'content_index':0,'text':content_text}, ensure_ascii=False)}\n\n"; seq += 1
+                yield f"event: response.content_part.done\ndata: {json.dumps({'type':'response.content_part.done','sequence_number':seq,'item_id':item['id'],'output_index':output_index,'content_index':0,'part': item['content'][0]}, ensure_ascii=False)}\n\n"; seq += 1
+                yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':output_index,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
+                final = deps["make_responses_base"](resp_id, model, created, instructions, "completed", request_options)
+                final["output"] = [*reasoning_items, item]
                 final["usage"] = usage
                 final["tools"] = client_tools
+                deps["update_response_state"](resp_id, chat_id, collected.get("message_id"), model, created)
                 yield f"event: response.completed\ndata: {json.dumps({'type':'response.completed','sequence_number':seq,'response':final}, ensure_ascii=False)}\n\n"
 
             return Response(gen_tool_stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -715,7 +813,7 @@ def handle_responses_api(request, deps: JsonDict):
             def gen_responses_stream():
                 seq = 0
                 full_text_parts = []
-                base = deps["make_responses_base"](resp_id, model, created, instructions, "in_progress")
+                base = deps["make_responses_base"](resp_id, model, created, instructions, "in_progress", request_options)
                 yield f"event: response.created\ndata: {json.dumps({'type':'response.created','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"; seq += 1
                 yield f"event: response.in_progress\ndata: {json.dumps({'type':'response.in_progress','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"; seq += 1
                 item_id = f"msg_{int(time.time() * 1000)}"
@@ -735,8 +833,9 @@ def handle_responses_api(request, deps: JsonDict):
                         if delta_content:
                             full_text_parts.append(delta_content)
                             yield f"event: response.output_text.delta\ndata: {json.dumps({'type':'response.output_text.delta','sequence_number':seq,'item_id':item_id,'output_index':0,'content_index':0,'delta':delta_content}, ensure_ascii=False)}\n\n"; seq += 1
-                full_text = "".join(full_text_parts)
+                full_text, thinking_parts = deps["split_embedded_thinking"]("".join(full_text_parts))
                 usage = _responses_usage(messages, full_text)
+                usage["output_tokens_details"]["reasoning_tokens"] = sum(max(0, len(item) // 4) for item in thinking_parts)
                 deps["mark_success"](
                     deps["acm"],
                     lease,
@@ -750,10 +849,12 @@ def handle_responses_api(request, deps: JsonDict):
                 yield f"event: response.output_text.done\ndata: {json.dumps({'type':'response.output_text.done','sequence_number':seq,'item_id':item_id,'output_index':0,'content_index':0,'text':full_text}, ensure_ascii=False)}\n\n"; seq += 1
                 yield f"event: response.content_part.done\ndata: {json.dumps({'type':'response.content_part.done','sequence_number':seq,'item_id':item_id,'output_index':0,'content_index':0,'part': part}, ensure_ascii=False)}\n\n"; seq += 1
                 yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':0,'item':item}, ensure_ascii=False)}\n\n"; seq += 1
-                final = deps["make_responses_base"](resp_id, model, created, instructions, "completed")
-                final["output"] = [item]
+                reasoning_items = _responses_reasoning_items(thinking_parts)
+                final = deps["make_responses_base"](resp_id, model, created, instructions, "completed", request_options)
+                final["output"] = [item, *reasoning_items]
                 final["usage"] = usage
                 final["tools"] = client_tools
+                deps["update_response_state"](resp_id, chat_id, item_id, model, created)
                 yield f"event: response.completed\ndata: {json.dumps({'type':'response.completed','sequence_number':seq,'response':final}, ensure_ascii=False)}\n\n"
 
             return Response(gen_responses_stream(), mimetype="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -762,7 +863,9 @@ def handle_responses_api(request, deps: JsonDict):
         content = collected.get("content", "")
         parsed = deps["parse_tool_response"](content) if client_tools else {"type": "text", "text": content}
         final_text = parsed.get("text", content) if isinstance(parsed, dict) else content
+        final_text, thinking_parts = deps["split_embedded_thinking"](final_text)
         usage = _responses_usage(messages, final_text)
+        usage["output_tokens_details"]["reasoning_tokens"] = sum(max(0, len(item) // 4) for item in thinking_parts)
         deps["mark_success"](
             deps["acm"],
             lease,
@@ -771,20 +874,23 @@ def handle_responses_api(request, deps: JsonDict):
             tokens_approx=usage["total_tokens"],
             cost=deps["get_cost"](rita_model),
         )
-        result = deps["make_responses_base"](resp_id, model, created, instructions, "completed")
+        result = deps["make_responses_base"](resp_id, model, created, instructions, "completed", request_options)
         result["tools"] = client_tools
         result["usage"] = usage
+        reasoning_items = _responses_reasoning_items(thinking_parts)
         if isinstance(parsed, dict) and parsed.get("type") == "tool_calls":
-            result["output"] = _responses_function_call_items(parsed.get("calls", []))
+            result["output"] = [*_responses_function_call_items(parsed.get("calls", [])), *reasoning_items]
+            deps["update_response_state"](resp_id, chat_id, collected.get("message_id"), model, created)
             return jsonify(result)
-        result["output"] = [make_message_item(final_text, collected.get("message_id"))]
+        result["output"] = [make_message_item(final_text, collected.get("message_id")), *reasoning_items]
+        deps["update_response_state"](resp_id, chat_id, collected.get("message_id"), model, created)
         return jsonify(result)
 
     except requests.RequestException as e:
         deps["log"](f"❌ Responses API error: {e}", "ERROR")
         deps["mark_failure"](deps["acm"], lease, str(e), model=model, request_type=request_type)
-        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
+        return _map_request_exception(e)
     except Exception as e:
         deps["log"](f"❌ Responses API unexpected error: {e}", "ERROR")
         deps["mark_failure"](deps["acm"], lease, str(e), model=model, request_type=request_type)
-        return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
+        return _error_response(str(e), "internal_error", 500)

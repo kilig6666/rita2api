@@ -1,8 +1,9 @@
 import json
 import unittest
 
+from auto_register import _build_auto_replenish_plan
 from adapters.anthropic_protocol import parse_tool_calls_from_text
-from adapters.openai_protocol import parse_tool_response
+from adapters.openai_protocol import parse_tool_response, split_embedded_thinking
 from services.rita_gateway import iter_rita_sse
 
 
@@ -106,6 +107,38 @@ class RitaSseEncodingTests(unittest.TestCase):
             events[0]["choices"][0]["delta"]["content"],
             "I'm Claude — 我可以帮你处理代码问题",
         )
+
+
+class EmbeddedThinkingTests(unittest.TestCase):
+    def test_split_embedded_thinking_returns_visible_text_and_reasoning_parts(self):
+        visible, thinking = split_embedded_thinking(
+            "<thinking>先规划工具调用</thinking>\n最终答案"
+        )
+
+        self.assertEqual(visible, "最终答案")
+        self.assertEqual(thinking, ["先规划工具调用"])
+
+
+class AutoReplenishPlanTests(unittest.TestCase):
+    def test_build_plan_triggers_when_active_accounts_below_threshold(self):
+        plan = _build_auto_replenish_plan(
+            {"active": 1, "total_quota": 500},
+            {"AUTO_REGISTER_MIN_ACTIVE": 3, "AUTO_REGISTER_MIN_QUOTA": 50, "AUTO_REGISTER_BATCH": 5},
+        )
+
+        self.assertTrue(plan["should_replenish"])
+        self.assertEqual(plan["to_create"], 2)
+        self.assertIn("active 1 < min_active 3", plan["reason_text"])
+
+    def test_build_plan_triggers_when_total_quota_below_threshold(self):
+        plan = _build_auto_replenish_plan(
+            {"active": 5, "total_quota": 10},
+            {"AUTO_REGISTER_MIN_ACTIVE": 2, "AUTO_REGISTER_MIN_QUOTA": 50, "AUTO_REGISTER_BATCH": 3},
+        )
+
+        self.assertTrue(plan["should_replenish"])
+        self.assertEqual(plan["to_create"], 1)
+        self.assertIn("total_quota 10 < min_quota 50", plan["reason_text"])
 
 
 if __name__ == "__main__":

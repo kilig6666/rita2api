@@ -14,7 +14,7 @@ import json
 import time
 from typing import Any, Iterable
 
-from .openai_protocol import extract_text, parse_tool_response, split_text_chunks
+from .openai_protocol import extract_text, parse_tool_response, split_embedded_thinking, split_text_chunks
 
 JsonDict = dict[str, Any]
 JsonValue = Any
@@ -260,9 +260,12 @@ def build_anthropic_message_response(
 ) -> JsonDict:
     """构造 Anthropic 非流式 message 响应。"""
 
+    visible_text, thinking_parts = split_embedded_thinking(text)
     content: list[JsonDict] = []
-    if text:
-        content.append({"type": "text", "text": text})
+    for thinking in thinking_parts:
+        content.append({"type": "thinking", "thinking": thinking})
+    if visible_text:
+        content.append({"type": "text", "text": visible_text})
 
     for index, call in enumerate(tool_calls or []):
         function_data = call.get("function", {}) if isinstance(call, dict) else {}
@@ -306,6 +309,7 @@ def build_anthropic_stream_events(
     """构造 Anthropic SSE 事件序列。"""
 
     message_id = message_id or f"msg_{int(time.time() * 1000)}"
+    visible_text, thinking_parts = split_embedded_thinking(text)
     yield (
         "event: message_start\n"
         f"data: {json.dumps({'type': 'message_start', 'message': {'id': message_id, 'type': 'message', 'role': 'assistant', 'content': [], 'model': model, 'stop_reason': None, 'stop_sequence': None, 'usage': {'input_tokens': max(0, int(input_tokens or 0)), 'output_tokens': 0}}}, ensure_ascii=False)}\n\n"
@@ -333,18 +337,35 @@ def build_anthropic_stream_events(
         yield f"event: message_stop\ndata: {json.dumps({'type': 'message_stop'}, ensure_ascii=False)}\n\n"
         return
 
+    block_index = 0
+    for thinking in thinking_parts:
+        yield (
+            "event: content_block_start\n"
+            f"data: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'thinking', 'thinking': ''}}, ensure_ascii=False)}\n\n"
+        )
+        for chunk in split_text_chunks(thinking, 80):
+            yield (
+                "event: content_block_delta\n"
+                f"data: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'thinking_delta', 'thinking': chunk}}, ensure_ascii=False)}\n\n"
+            )
+        yield (
+            "event: content_block_stop\n"
+            f"data: {json.dumps({'type': 'content_block_stop', 'index': block_index}, ensure_ascii=False)}\n\n"
+        )
+        block_index += 1
+
     yield (
         "event: content_block_start\n"
-        f"data: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}}, ensure_ascii=False)}\n\n"
+        f"data: {json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}}, ensure_ascii=False)}\n\n"
     )
-    for chunk in split_text_chunks(text or "", 80):
+    for chunk in split_text_chunks(visible_text or "", 80):
         yield (
             "event: content_block_delta\n"
-            f"data: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': chunk}}, ensure_ascii=False)}\n\n"
+            f"data: {json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': chunk}}, ensure_ascii=False)}\n\n"
         )
     yield (
         "event: content_block_stop\n"
-        f"data: {json.dumps({'type': 'content_block_stop', 'index': 0}, ensure_ascii=False)}\n\n"
+        f"data: {json.dumps({'type': 'content_block_stop', 'index': block_index}, ensure_ascii=False)}\n\n"
     )
     yield (
         "event: message_delta\n"

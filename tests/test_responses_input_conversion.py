@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from adapters.openai_protocol import responses_input_to_messages
+from adapters.openai_protocol import make_responses_base, responses_input_to_messages
 
 
 class ResponsesInputToMessagesTests(unittest.TestCase):
@@ -144,6 +144,30 @@ class ResponsesInputToMessagesTests(unittest.TestCase):
                 }
             ],
         )
+
+    def test_make_responses_base_uses_request_options(self):
+        base = make_responses_base(
+            "resp_1",
+            "gpt-5.4",
+            123.0,
+            "遵守系统规则",
+            "completed",
+            {
+                "tool_choice": {"type": "function", "function": {"name": "weather_lookup"}},
+                "parallel_tool_calls": False,
+                "temperature": 0.2,
+                "top_p": 0.8,
+                "max_output_tokens": 4096,
+                "metadata": {"trace_id": "abc"},
+            },
+        )
+
+        self.assertEqual(base["tool_choice"], {"type": "function", "function": {"name": "weather_lookup"}})
+        self.assertFalse(base["parallel_tool_calls"])
+        self.assertEqual(base["temperature"], 0.2)
+        self.assertEqual(base["top_p"], 0.8)
+        self.assertEqual(base["max_output_tokens"], 4096)
+        self.assertEqual(base["metadata"], {"trace_id": "abc"})
 
 
 if __name__ == "__main__":
