@@ -215,6 +215,10 @@ tr:hover { background: rgba(99,102,241,.04); }
 .cfg-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .cfg-key { font-size: 12px; font-family: monospace; color: var(--accent); font-weight: 600; }
 .cfg-desc { font-size: 11px; color: var(--text2); line-height: 1.4; margin-bottom: 8px; }
+.cfg-test-result { margin-top: 8px; font-size: 11px; line-height: 1.45; color: var(--text2); word-break: break-word; }
+.cfg-test-result.success { color: var(--green); }
+.cfg-test-result.error { color: var(--red); }
+.cfg-test-result.info { color: var(--yellow); }
 .cfg-edit-row { display: flex; align-items: center; gap: 8px; }
 .cfg-input { flex: 1; padding: 7px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 12px; font-family: monospace; }
 .cfg-input:focus { outline: none; border-color: var(--accent); }
@@ -223,6 +227,10 @@ tr:hover { background: rgba(99,102,241,.04); }
 .cfg-save-btn:hover { background: var(--accent-hover); }
 .cfg-save-btn:disabled { opacity: .5; cursor: not-allowed; }
 .cfg-save-btn.saved { background: var(--green); }
+.cfg-test-btn { padding: 6px 12px; background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 11px; cursor: pointer; font-weight: 500; transition: all .2s; white-space: nowrap; }
+.cfg-test-btn:hover { border-color: var(--accent); color: var(--accent); }
+.cfg-test-btn:disabled { opacity: .5; cursor: not-allowed; }
+.cfg-test-btn.saved { border-color: var(--green); color: var(--green); }
 /* Toggle switch for boolean configs */
 .toggle-wrap { display: flex; align-items: center; gap: 10px; }
 .toggle { position: relative; width: 40px; height: 22px; cursor: pointer; }
@@ -285,6 +293,34 @@ th .row-cb { margin: 0; }
 .mail-acct-item .acct-name { font-size: 10px; color: var(--text2); }
 .mail-acct-item .acct-prov { font-size: 10px; }
 
+/* ==================== Model Plaza ==================== */
+.model-plaza-toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.model-plaza-search { flex: 1; min-width: 240px; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; }
+.model-plaza-search:focus { outline: none; border-color: var(--accent); }
+.model-plaza-search::placeholder { color: var(--text2); }
+.model-plaza-filter-bar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+.model-plaza-filter { padding: 6px 12px; border: 1px solid var(--border); background: var(--card); color: var(--text2); border-radius: 9999px; cursor: pointer; font-size: 12px; transition: all .15s; }
+.model-plaza-filter:hover { border-color: var(--accent); color: var(--accent); }
+.model-plaza-filter.active { background: rgba(99,102,241,.12); border-color: var(--accent); color: var(--accent); }
+.model-plaza-meta { font-size: 12px; color: var(--text2); margin-bottom: 16px; line-height: 1.7; }
+.model-plaza-meta a { color: var(--accent); text-decoration: none; }
+.model-plaza-meta a:hover { text-decoration: underline; }
+.model-plaza-section { margin-bottom: 24px; }
+.model-plaza-section-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.model-plaza-section-head h3 { font-size: 14px; font-weight: 600; }
+.model-plaza-count { font-size: 11px; color: var(--accent); background: rgba(99,102,241,.12); padding: 2px 8px; border-radius: 9999px; }
+.model-plaza-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 12px; }
+.model-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 10px; min-height: 180px; }
+.model-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.model-card-title { font-size: 14px; font-weight: 600; line-height: 1.5; }
+.model-card-id code { font-size: 11px; color: var(--accent); word-break: break-all; }
+.model-card-price { padding: 4px 10px; border-radius: 9999px; font-size: 12px; font-weight: 700; white-space: nowrap; background: rgba(34,197,94,.14); color: var(--green); }
+.model-card-price.pending { background: rgba(234,179,8,.15); color: var(--yellow); }
+.model-card-desc { font-size: 12px; color: var(--text2); line-height: 1.6; min-height: 38px; white-space: pre-wrap; }
+.model-card-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: auto; }
+.model-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; font-size: 11px; border-radius: 9999px; background: rgba(99,102,241,.12); color: var(--accent); }
+.model-chip.muted { background: rgba(156,163,175,.15); color: var(--text2); }
+
 /* ==================== Responsive ==================== */
 @media (max-width: 900px) {
   .chat-layout { grid-template-columns: 1fr; }
@@ -297,6 +333,7 @@ th .row-cb { margin: 0; }
   .stats-bar { grid-template-columns: repeat(3, 1fr); }
   .tab-nav { gap: 2px; }
   .tab-btn { padding: 8px 12px; font-size: 12px; }
+  .model-plaza-grid { grid-template-columns: 1fr; }
 }
 </style>
 </head>
@@ -334,11 +371,17 @@ th .row-cb { margin: 0; }
     <button class="tab-btn" onclick="switchTab('accounts')" id="tab-accounts">
       👥 <span>账号管理</span>
     </button>
+    <button class="tab-btn" onclick="switchTab('model-plaza')" id="tab-model-plaza">
+      🧠 <span>模型广场</span>
+    </button>
     <button class="tab-btn" onclick="switchTab('mail')" id="tab-mail">
       📧 <span>邮箱服务</span>
     </button>
     <button class="tab-btn" onclick="switchTab('config')" id="tab-config">
       ⚙️ <span>配置管理</span>
+    </button>
+    <button class="tab-btn" onclick="switchTab('request-logs')" id="tab-request-logs">
+      🧾 <span>请求日志</span>
     </button>
   </div>
 
@@ -389,6 +432,7 @@ th .row-cb { margin: 0; }
           <option value="ohmycaptcha_local">打码: OhMyCaptcha Local</option>
         </select>
         <button class="btn btn-primary" id="regBtn" onclick="triggerRegister()">🚀 手动注册</button>
+        <button class="btn btn-danger btn-sm" id="regStopBtn" onclick="stopRegister()" style="display:none">⛔ 强行终止</button>
         <button class="btn btn-outline btn-sm" onclick="loadRegConfig()">🔃 刷新状态</button>
       </div>
     </div>
@@ -420,7 +464,10 @@ th .row-cb { margin: 0; }
     <!-- Registration Log -->
     <div class="section-header">
       <h2>📋 <span>注册日志</span></h2>
-      <button class="btn btn-outline btn-sm" onclick="clearRegLog()">清空日志</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span id="regTaskStatus" style="font-size:12px;color:var(--text2)">空闲</span>
+        <button class="btn btn-outline btn-sm" onclick="clearRegLog()">清空日志</button>
+      </div>
     </div>
     <div class="reg-log" id="regLog">
       <div class="log-info">等待注册任务...</div>
@@ -496,6 +543,32 @@ th .row-cb { margin: 0; }
     </div>
   </div>
 
+  <!-- ==================== Tab: Model Plaza ==================== -->
+  <div class="tab-panel" id="panel-model-plaza">
+    <div class="section-header">
+      <h2>🧠 <span>模型广场</span></h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-outline btn-sm" onclick="loadModelPlaza(true)">🔃 刷新</button>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card blue"><div class="num" id="mpStatTotal">-</div><div class="label">全部模型</div></div>
+      <div class="stat-card green"><div class="num" id="mpStatPriced">-</div><div class="label">已收录价格</div></div>
+      <div class="stat-card yellow"><div class="num" id="mpStatUnpriced">-</div><div class="label">待补充价格</div></div>
+      <div class="stat-card purple"><div class="num" id="mpStatCategories">-</div><div class="label">分类数</div></div>
+    </div>
+
+    <div class="model-plaza-toolbar">
+      <input class="model-plaza-search" id="modelPlazaSearch" type="text" placeholder="搜索模型名称 / model_xxx / 描述" oninput="onModelPlazaSearch(this.value)">
+    </div>
+    <div class="model-plaza-filter-bar" id="modelPlazaFilters"></div>
+    <div class="model-plaza-meta" id="modelPlazaMeta">加载中...</div>
+    <div id="modelPlazaContent">
+      <div class="empty"><div class="icon">🧠</div>加载模型广场...</div>
+    </div>
+  </div>
+
   <!-- ==================== Tab: Mail Service ==================== -->
   <div class="tab-panel" id="panel-mail">
     <div class="section-header">
@@ -554,10 +627,92 @@ th .row-cb { margin: 0; }
         <button class="btn btn-outline btn-sm" onclick="loadConfig()">🔃 刷新</button>
       </div>
     </div>
+    <div style="font-size:12px;color:var(--text2);background:rgba(99,102,241,.08);border:1px solid rgba(99,102,241,.18);padding:10px 12px;border-radius:8px;margin-bottom:12px;line-height:1.7">
+      <div><strong style="color:var(--text)">AUTH_TOKEN</strong>：仅用于管理面板登录与 <code>/api/*</code> 管理接口。</div>
+      <div><strong style="color:var(--text)">PROXY_API_KEY</strong>：模型调用 API Key，供外部 OpenAI / Anthropic 客户端访问 <code>/v1/*</code> 时使用。</div>
+      <div><strong style="color:var(--text)">兼容回退</strong>：若 <code>PROXY_API_KEY</code> 留空，当前版本会临时回退使用 <code>AUTH_TOKEN</code> 作为 <code>/v1/*</code> 调用密钥。</div>
+    </div>
     <div class="config-search">
       <input type="text" id="configSearchInput" placeholder="搜索配置项..." oninput="filterConfig(this.value)">
     </div>
     <div id="configContainer"></div>
+  </div>
+
+  <!-- ==================== Tab: Request Logs ==================== -->
+  <div class="tab-panel" id="panel-request-logs">
+    <div class="section-header">
+      <h2>🧾 <span>请求日志</span></h2>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="model-select" id="requestLogDateRange" style="width:auto;padding:7px 12px" onchange="applyRequestLogFilters()">
+          <option value="all">全部时间</option>
+          <option value="today">今天</option>
+          <option value="7d">最近 7 天</option>
+          <option value="30d">最近 30 天</option>
+        </select>
+        <select class="model-select" id="requestLogType" style="width:auto;padding:7px 12px" onchange="applyRequestLogFilters()">
+          <option value="">全部请求类型</option>
+          <option value="chat_completions">chat/completions</option>
+          <option value="messages">messages</option>
+          <option value="responses">responses</option>
+        </select>
+        <input type="text" id="requestLogModel" placeholder="搜索模型名..." style="min-width:220px;padding:8px 12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px" onkeydown="if(event.key==='Enter'){applyRequestLogFilters()}">
+        <select class="model-select" id="requestLogPageSize" style="width:auto;padding:7px 12px" onchange="changeRequestLogPageSize(this.value)">
+          <option value="20">20 / 页</option>
+          <option value="50">50 / 页</option>
+          <option value="100">100 / 页</option>
+        </select>
+        <button class="btn btn-outline btn-sm" onclick="applyRequestLogFilters()">查询</button>
+        <button class="btn btn-outline btn-sm" onclick="resetRequestLogFilters()">重置</button>
+      </div>
+    </div>
+
+    <div class="stats-bar">
+      <div class="stat-card blue"><div class="num" id="requestLogTotal">-</div><div class="label">请求总数</div></div>
+      <div class="stat-card purple"><div class="num" id="requestLogTokens">-</div><div class="label">Token 估算</div></div>
+      <div class="stat-card green"><div class="num" id="requestLogSuccess">-</div><div class="label">成功</div></div>
+      <div class="stat-card red"><div class="num" id="requestLogFailed">-</div><div class="label">失败</div></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-bottom:16px">
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+        <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">按请求类型汇总</div>
+        <div id="requestLogTypeSummary" style="display:flex;flex-direction:column;gap:8px">
+          <div style="color:var(--text2);font-size:12px">加载中...</div>
+        </div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px">
+        <div style="font-size:12px;color:var(--text2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px">按模型汇总（Top 10）</div>
+        <div id="requestLogModelSummary" style="display:flex;flex-direction:column;gap:8px">
+          <div style="color:var(--text2);font-size:12px">加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>账号</th>
+            <th>请求类型</th>
+            <th>模型</th>
+            <th>Token(估算)</th>
+            <th>结果</th>
+          </tr>
+        </thead>
+        <tbody id="requestLogTable">
+          <tr><td colspan="6" class="empty"><div class="icon">🧾</div>加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="section-header" style="margin-top:12px">
+      <div id="requestLogPageInfo" style="font-size:12px;color:var(--text2)">-</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <button class="btn btn-outline btn-sm" id="requestLogPrevBtn" onclick="changeRequestLogPage(_requestLog.page - 1)">上一页</button>
+        <button class="btn btn-outline btn-sm" id="requestLogNextBtn" onclick="changeRequestLogPage(_requestLog.page + 1)">下一页</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -742,7 +897,9 @@ function switchTab(tab) {
 
   // Lazy load data per tab
   if (tab === 'accounts') loadAccounts();
+  else if (tab === 'model-plaza') loadModelPlaza();
   else if (tab === 'config') loadConfig();
+  else if (tab === 'request-logs') loadRequestLogs();
   else if (tab === 'register') loadRegConfig();
   else if (tab === 'mail') loadMailStatus();
   else if (tab === 'chat') loadModels();
@@ -750,7 +907,7 @@ function switchTab(tab) {
 
 // ===================== Load All Data =====================
 async function loadAllData() {
-  await Promise.all([loadStats(), loadAccounts(), loadModels()]);
+  await Promise.all([loadStats(), loadAccounts(), loadModels(), loadModelPlaza()]);
 }
 
 // ===================== In-memory store =====================
@@ -758,6 +915,21 @@ let _accounts = [];
 let _models = [];
 let _chatConversation = [];
 let _selectedIds = new Set();  // batch selection
+let _modelPlazaData = { models: [], categories: [], price_doc: {} };
+let _modelPlazaSearch = '';
+let _modelPlazaCategory = '__all__';
+let _requestLog = {
+  page: 1,
+  pageSize: 20,
+  total: 0,
+  totalPages: 1,
+  dateRange: 'all',
+  requestType: '',
+  model: '',
+  logs: [],
+  summary: {},
+  breakdown: { by_request_type: [], by_model: [] },
+};
 
 // ===================== Stats =====================
 async function loadStats() {
@@ -1074,6 +1246,158 @@ function onModelChange() {
   document.getElementById('curModelName').textContent = m ? (m.name || m.id) : '-';
 }
 
+// ===================== Model Plaza =====================
+async function loadModelPlaza(force = false) {
+  const content = document.getElementById('modelPlazaContent');
+  const meta = document.getElementById('modelPlazaMeta');
+  if (!content || !meta) return;
+  meta.textContent = '正在同步模型目录...';
+  content.innerHTML = '<div class="empty"><div class="icon">🧠</div>加载模型广场...</div>';
+  try {
+    const path = force ? '/api/model-plaza?refresh=1' : '/api/model-plaza';
+    _modelPlazaData = await api('GET', path);
+    renderModelPlaza();
+  } catch (e) {
+    if (e.message !== 'Unauthorized') {
+      meta.textContent = '模型广场加载失败';
+      content.innerHTML = `<div class="empty"><div class="icon">⚠️</div>${esc(e.message || '加载失败')}</div>`;
+    }
+  }
+}
+
+function onModelPlazaSearch(value) {
+  _modelPlazaSearch = String(value || '').trim().toLowerCase();
+  renderModelPlaza();
+}
+
+function setModelPlazaCategory(category) {
+  _modelPlazaCategory = category || '__all__';
+  renderModelPlaza();
+}
+
+function extractModelPlazaTags(item) {
+  const tags = [];
+  const seen = new Set();
+  [item.tool, item.ability].forEach(raw => {
+    String(raw || '')
+      .split(/[、，,|/]+/)
+      .map(s => s.trim())
+      .filter(Boolean)
+      .forEach(tag => {
+        const key = tag.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          tags.push(tag);
+        }
+      });
+  });
+  return tags;
+}
+
+function renderModelPlaza() {
+  const data = _modelPlazaData || {};
+  const models = Array.isArray(data.models) ? data.models : [];
+  const categories = Array.isArray(data.categories) ? data.categories : [];
+  const filtersWrap = document.getElementById('modelPlazaFilters');
+  const metaEl = document.getElementById('modelPlazaMeta');
+  const contentEl = document.getElementById('modelPlazaContent');
+  if (!filtersWrap || !metaEl || !contentEl) return;
+
+  document.getElementById('mpStatTotal').textContent = data.total ?? models.length ?? 0;
+  document.getElementById('mpStatPriced').textContent = data.priced_total ?? 0;
+  document.getElementById('mpStatUnpriced').textContent = data.unpriced_total ?? 0;
+  document.getElementById('mpStatCategories').textContent = categories.length ?? 0;
+
+  if (_modelPlazaCategory !== '__all__' && !categories.some(cat => cat.name === _modelPlazaCategory)) {
+    _modelPlazaCategory = '__all__';
+  }
+
+  const filterButtons = [
+    { name: '全部', value: '__all__', count: models.length },
+    ...categories.map(cat => ({ name: cat.name, value: cat.name, count: cat.count })),
+  ];
+  filtersWrap.innerHTML = filterButtons.map(cat => `
+    <button class="model-plaza-filter ${_modelPlazaCategory === cat.value ? 'active' : ''}" onclick="setModelPlazaCategory('${esc(cat.value)}')">
+      ${esc(cat.name)} · ${cat.count}
+    </button>
+  `).join('');
+
+  const keyword = _modelPlazaSearch;
+  const filtered = models.filter(item => {
+    const matchCategory = _modelPlazaCategory === '__all__' || item.category === _modelPlazaCategory;
+    if (!matchCategory) return false;
+    if (!keyword) return true;
+    const haystack = [item.name, item.id, item.description, item.category, item.tool, item.ability]
+      .map(v => String(v || '').toLowerCase())
+      .join('\n');
+    return haystack.includes(keyword);
+  });
+
+  const syncedAt = data.synced_at ? new Date(Number(data.synced_at) * 1000).toLocaleString() : '-';
+  const priceDoc = data.price_doc || {};
+  const metaParts = [];
+  if (priceDoc.source) metaParts.push(`价格来源：<a href="${esc(priceDoc.source)}" target="_blank" rel="noreferrer">${esc(priceDoc.source)}</a>`);
+  if (priceDoc.updated_at) metaParts.push(`价格更新时间：${esc(priceDoc.updated_at)}`);
+  if (priceDoc.total !== undefined) metaParts.push(`价格表条目：${priceDoc.total}`);
+  metaParts.push(`模型目录同步：${esc(syncedAt)}`);
+  metaEl.innerHTML = metaParts.join(' ｜ ');
+
+  if (!filtered.length) {
+    contentEl.innerHTML = '<div class="empty"><div class="icon">🔎</div>当前筛选下没有模型</div>';
+    return;
+  }
+
+  const grouped = new Map();
+  filtered.forEach(item => {
+    const category = item.category || '未分类';
+    if (!grouped.has(category)) grouped.set(category, []);
+    grouped.get(category).push(item);
+  });
+
+  const orderedCategories = categories.map(cat => cat.name).filter(name => grouped.has(name));
+  grouped.forEach((_, name) => {
+    if (!orderedCategories.includes(name)) orderedCategories.push(name);
+  });
+
+  contentEl.innerHTML = orderedCategories.map(category => {
+    const items = grouped.get(category) || [];
+    return `
+      <div class="model-plaza-section">
+        <div class="model-plaza-section-head">
+          <h3>${esc(category)}</h3>
+          <span class="model-plaza-count">${items.length} 个模型</span>
+        </div>
+        <div class="model-plaza-grid">
+          ${items.map(item => {
+            const tags = extractModelPlazaTags(item).map(tag => `<span class="model-chip">${esc(tag)}</span>`).join('');
+            const priceClass = item.points === null || item.points === undefined ? 'pending' : '';
+            const priceSource = item.price_source
+              ? '<span class="model-chip">价格.md</span>'
+              : '<span class="model-chip muted">价格待补充</span>';
+            return `
+              <div class="model-card">
+                <div class="model-card-head">
+                  <div>
+                    <div class="model-card-title">${esc(item.name || item.id)}</div>
+                    <div class="model-card-id"><code>${esc(item.id)}</code></div>
+                  </div>
+                  <div class="model-card-price ${priceClass}">${esc(item.price_label || '待补充')}</div>
+                </div>
+                <div class="model-card-desc">${esc(item.description || '暂无描述')}</div>
+                <div class="model-card-meta">
+                  <span class="model-chip">${esc(item.category || '未分类')}</span>
+                  ${priceSource}
+                  ${tags}
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function clearChat() {
   _chatConversation = [];
   document.getElementById('chatMessages').innerHTML = '<div class="chat-msg system">💬 对话已清空</div>';
@@ -1151,7 +1475,137 @@ async function sendMessage() {
 }
 
 // ===================== Auto Register =====================
+let _regTask = null;
+let _regStream = null;
+let _regStreamTaskId = '';
+let _regSeenSeq = 0;
+let _regStickBottom = true;
+
+function initRegLog() {
+  const log = document.getElementById('regLog');
+  if (!log || log.dataset.bound === '1') return;
+  log.dataset.bound = '1';
+  log.addEventListener('scroll', () => {
+    _regStickBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 24;
+  });
+}
+
+function scrollRegLog(force = false) {
+  const log = document.getElementById('regLog');
+  if (!log) return;
+  if (force || _regStickBottom) {
+    log.scrollTop = log.scrollHeight;
+  }
+}
+
+function setRegTaskState(task) {
+  _regTask = task || null;
+  const regBtn = document.getElementById('regBtn');
+  const stopBtn = document.getElementById('regStopBtn');
+  const statusEl = document.getElementById('regTaskStatus');
+  const status = task?.status || 'idle';
+
+  if (status === 'running') {
+    regBtn.disabled = true;
+    regBtn.textContent = '注册中...';
+    stopBtn.style.display = '';
+    stopBtn.disabled = false;
+    stopBtn.textContent = '⛔ 强行终止';
+    statusEl.textContent = `运行中：已成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.style.color = 'var(--accent)';
+    return;
+  }
+  if (status === 'stopping') {
+    regBtn.disabled = true;
+    regBtn.textContent = '停止中...';
+    stopBtn.style.display = '';
+    stopBtn.disabled = true;
+    stopBtn.textContent = '停止中...';
+    statusEl.textContent = `停止中：已成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.style.color = 'var(--orange)';
+    return;
+  }
+
+  regBtn.disabled = false;
+  regBtn.textContent = '🚀 手动注册';
+  stopBtn.style.display = 'none';
+  stopBtn.disabled = false;
+  stopBtn.textContent = '⛔ 强行终止';
+
+  if (status === 'completed') {
+    statusEl.textContent = `已完成：成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.style.color = 'var(--green)';
+  } else if (status === 'stopped') {
+    statusEl.textContent = `已终止：成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.style.color = 'var(--orange)';
+  } else if (status === 'failed') {
+    statusEl.textContent = `失败：${task.error || '未知错误'}`;
+    statusEl.style.color = 'var(--red)';
+  } else {
+    statusEl.textContent = '空闲';
+    statusEl.style.color = 'var(--text2)';
+  }
+}
+
+function closeRegStream() {
+  if (_regStream) {
+    _regStream.close();
+    _regStream = null;
+  }
+}
+
+function connectRegStream(taskId) {
+  if (!taskId) return;
+  if (_regStream && _regStreamTaskId === taskId) return;
+  closeRegStream();
+  _regStreamTaskId = taskId;
+  const params = new URLSearchParams({ task_id: taskId });
+  if (_authToken) params.set('auth', _authToken);
+  const es = new EventSource(`/api/auto-register/stream?${params.toString()}`);
+  _regStream = es;
+
+  es.addEventListener('log', (ev) => {
+    try {
+      const entry = JSON.parse(ev.data || '{}');
+      if ((entry.seq || 0) <= _regSeenSeq) return;
+      _regSeenSeq = entry.seq || _regSeenSeq;
+      const level = String(entry.level || 'INFO').toUpperCase();
+      const type = level === 'ERROR' ? 'err' : level === 'WARNING' ? 'warn' : level === 'SUCCESS' ? 'ok' : 'info';
+      const ts = entry.ts ? new Date(entry.ts * 1000).toLocaleTimeString('zh-CN') : undefined;
+      addRegLog(type, entry.message || '', ts);
+    } catch (_) {}
+  });
+
+  es.addEventListener('state', (ev) => {
+    try {
+      const task = JSON.parse(ev.data || '{}');
+      setRegTaskState(task);
+    } catch (_) {}
+  });
+
+  es.addEventListener('done', async (ev) => {
+    try {
+      const task = JSON.parse(ev.data || '{}');
+      setRegTaskState(task);
+      if (task.status === 'completed') {
+        await Promise.allSettled([loadAccounts(), loadStats()]);
+      } else if (task.status === 'stopped' || task.status === 'failed') {
+        await Promise.allSettled([loadAccounts(), loadStats()]);
+      }
+    } catch (_) {}
+    closeRegStream();
+  });
+
+  es.onerror = () => {
+    if (_regTask?.status === 'running' || _regTask?.status === 'stopping') {
+      addRegLog('warn', '⚠️ 注册日志流已断开，稍后可刷新状态重连');
+    }
+    closeRegStream();
+  };
+}
+
 function loadRegConfig() {
+  initRegLog();
   Promise.all([api('GET', '/api/auto-register/config'), api('GET', '/api/accounts/summary'), api('GET', '/api/stats')])
     .then(([cfg, summary, stats]) => {
       const regCaptchaProvider = document.getElementById('regCaptchaProvider');
@@ -1190,7 +1644,11 @@ function loadRegConfig() {
       };
       if (cfg.mail_provider_configured) {
         dotMail.className = 'status-dot green';
-        document.getElementById('descMail').textContent = `当前默认: ${providerLabelMap[cfg.mail_provider_default] || cfg.mail_provider_default} | ${providerBaseMap[cfg.mail_provider_default] || '-'}`;
+        if (cfg.mail_provider_default === 'moemail' && (cfg.moemail_channels_total || 0) > 0) {
+          document.getElementById('descMail').textContent = `当前默认: MoeMail | 启用 ${cfg.moemail_channels_enabled || 0}/${cfg.moemail_channels_total || 0} 渠道 | 轮询使用`;
+        } else {
+          document.getElementById('descMail').textContent = `当前默认: ${providerLabelMap[cfg.mail_provider_default] || cfg.mail_provider_default} | ${providerBaseMap[cfg.mail_provider_default] || '-'}`;
+        }
       } else {
         dotMail.className = 'status-dot red';
         const missing = (cfg.mail_provider_missing || []).join(', ') || '邮件配置缺失';
@@ -1214,39 +1672,47 @@ function loadRegConfig() {
       const dotPool = document.getElementById('dotPool');
       dotPool.className = (summary.active ?? 0) > 0 ? 'status-dot green' : 'status-dot yellow';
       document.getElementById('descPool').textContent = `活跃: ${summary.active ?? 0} / 总: ${summary.total ?? 0} / 点数: ${summary.total_quota ?? 0}`;
+
+      const task = cfg.current_task || null;
+      setRegTaskState(task);
+      if (task?.id && (task.status === 'running' || task.status === 'stopping')) {
+        if (_regStreamTaskId !== task.id) {
+          _regSeenSeq = 0;
+          document.getElementById('regLog').innerHTML = '';
+        }
+        connectRegStream(task.id);
+      } else if (!task?.id || ['completed', 'stopped', 'failed', 'idle'].includes(task.status || '')) {
+        closeRegStream();
+      }
     }).catch(e => {
       addRegLog('warn', `⚠️ 注册状态加载失败: ${e.message}`);
     });
 }
 
 async function triggerRegister() {
+  initRegLog();
   const count = parseInt(document.getElementById('regCount').value);
   const captchaProvider = document.getElementById('regCaptchaProvider')?.value || 'yescaptcha';
-  const btn = document.getElementById('regBtn');
-  btn.disabled = true; btn.textContent = '注册中...';
+  document.getElementById('regLog').innerHTML = '';
+  _regStickBottom = true;
   addRegLog('info', `开始注册 ${count} 个账号... 打码=${captchaProvider}`);
 
   try {
-    const res = await api('POST', '/api/auto-register', { count, captcha_provider: captchaProvider });
-    if (res.registered > 0) {
-      addRegLog('ok', `✅ 成功注册 ${res.registered}/${res.requested} 个账号`);
-      if (res.accounts) {
-        res.accounts.forEach(acc => {
-          addRegLog('ok', `  + ${acc.email || 'unknown'} | captcha=${acc.captcha_provider || res.captcha_provider || captchaProvider} | token: ${(acc.token || '').substring(0, 12)}...`);
-        });
-      }
-      loadAccounts(); loadStats(); loadRegConfig();
-    } else {
-      addRegLog('err', `❌ 注册失败: ${res.error || '未知错误'}`);
-      if (res.config) {
-        const missing = [];
-        (res.config.captcha_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
-        (res.config.mail_provider_missing || []).forEach(k => { if (!missing.includes(k)) missing.push(k); });
-        if (missing.length) addRegLog('err', `  缺失配置: ${missing.join(', ')}`);
-      }
+    const res = await api('POST', '/api/auto-register/start', { count, captcha_provider: captchaProvider });
+    const task = res.task || null;
+    _regSeenSeq = 0;
+    if (task?.id) {
+      setRegTaskState(task);
+      connectRegStream(task.id);
     }
   } catch(e) {
     const payload = e.payload || {};
+    if (e.status === 409 && payload.task?.id) {
+      setRegTaskState(payload.task);
+      connectRegStream(payload.task.id);
+      addRegLog('warn', '⚠️ 已有手动注册任务正在运行，已自动接入日志流');
+      return;
+    }
     addRegLog('err', `❌ 注册请求失败: ${e.message}`);
     if (payload.config) {
       const missing = [];
@@ -1257,23 +1723,40 @@ async function triggerRegister() {
         addRegLog('warn', `  当前注册代理: ${payload.config.register_proxy}`);
       }
     }
-  } finally {
-    btn.disabled = false; btn.textContent = '🚀 手动注册';
+    setRegTaskState(null);
   }
 }
 
-function addRegLog(type, msg) {
+async function stopRegister() {
+  if (!_regTask?.id) {
+    toast('当前没有可终止的手动注册任务', 'error');
+    return;
+  }
+  try {
+    const res = await api('POST', '/api/auto-register/stop', { task_id: _regTask.id });
+    setRegTaskState(res.task || _regTask);
+    addRegLog('warn', '⛔ 已提交强行终止请求，正在等待安全停止...');
+  } catch (e) {
+    toast('终止失败: ' + e.message, 'error');
+  }
+}
+
+function addRegLog(type, msg, tsText) {
   const log = document.getElementById('regLog');
   const div = document.createElement('div');
   const cls = type === 'ok' ? 'log-ok' : type === 'err' ? 'log-err' : type === 'warn' ? 'log-warn' : 'log-info';
   div.className = cls;
-  const ts = new Date().toLocaleTimeString('zh-CN');
+  const ts = tsText || new Date().toLocaleTimeString('zh-CN');
   div.textContent = `[${ts}] ${msg}`;
   log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
+  scrollRegLog();
 }
 
-function clearRegLog() { document.getElementById('regLog').innerHTML = '<div class="log-info">日志已清空</div>'; }
+function clearRegLog() {
+  document.getElementById('regLog').innerHTML = '<div class="log-info">日志已清空</div>';
+  _regStickBottom = true;
+  scrollRegLog(true);
+}
 
 // ===================== Mail Service =====================
 function loadMailStatus() {
@@ -1294,9 +1777,22 @@ function loadMailStatus() {
 
     const moe = res.moemail || {};
     const dotM = document.getElementById('dotMoemail');
-    if (moe.configured) { dotM.className = 'status-dot green'; document.getElementById('descMoemail').textContent = defaultProvider === 'moemail' ? '已配置并可用（当前默认）' : '已配置并可用'; }
-    else { dotM.className = 'status-dot red'; document.getElementById('descMoemail').textContent = '未配置 (需要 MOEMAIL_API_KEY / MOEMAIL_API_BASE)'; }
-    document.getElementById('moemailBase').textContent = 'API: ' + (moe.api_base || '-');
+    if (moe.configured) {
+      dotM.className = 'status-dot green';
+      const moeDesc = (moe.channels_total || 0) > 0
+        ? `已配置并可用 | 启用 ${moe.channels_enabled || 0}/${moe.channels_total || 0} 渠道${defaultProvider === 'moemail' ? '（当前默认，轮询中）' : ''}`
+        : (defaultProvider === 'moemail' ? '已配置并可用（当前默认）' : '已配置并可用');
+      document.getElementById('descMoemail').textContent = moeDesc;
+    }
+    else {
+      dotM.className = 'status-dot red';
+      document.getElementById('descMoemail').textContent = moe.channels_parse_error
+        ? `未配置（渠道 JSON 解析失败: ${moe.channels_parse_error}）`
+        : '未配置 (需要 MOEMAIL_CHANNELS_JSON 或 MOEMAIL_API_KEY / MOEMAIL_API_BASE)';
+    }
+    document.getElementById('moemailBase').textContent = (moe.channels_total || 0) > 0
+      ? `API(legacy): ${moe.api_base || '-'} | 渠道: ${moe.channels_enabled || 0}/${moe.channels_total || 0}`
+      : 'API: ' + (moe.api_base || '-');
   }).catch(e => {});
 
   // Load account emails for picker
@@ -1357,17 +1853,240 @@ async function checkMailCode() {
   }
 }
 
+// ===================== Request Logs =====================
+function requestTypeLabel(type) {
+  const mapping = {
+    chat_completions: 'chat/completions',
+    messages: 'messages',
+    responses: 'responses',
+    unknown: 'unknown',
+  };
+  return mapping[type] || type || 'unknown';
+}
+
+function requestDateRangeLabel(value) {
+  const mapping = {
+    all: '全部时间',
+    today: '今天',
+    '7d': '最近 7 天',
+    '30d': '最近 30 天',
+  };
+  return mapping[value] || '全部时间';
+}
+
+function formatRequestLogTime(ts) {
+  if (!ts) return '-';
+  try {
+    return new Date(Number(ts) * 1000).toLocaleString('zh-CN');
+  } catch (e) {
+    return '-';
+  }
+}
+
+async function loadRequestLogs(page = _requestLog.page) {
+  try {
+    const params = new URLSearchParams({
+      page: String(Math.max(1, page || 1)),
+      page_size: String(_requestLog.pageSize || 20),
+      date_range: String(_requestLog.dateRange || 'all'),
+    });
+    if (_requestLog.requestType) params.set('request_type', _requestLog.requestType);
+    if (_requestLog.model) params.set('model', _requestLog.model);
+    const res = await api('GET', '/api/request-logs?' + params.toString());
+    _requestLog.logs = res.logs || [];
+    _requestLog.summary = res.summary || {};
+    _requestLog.breakdown = res.breakdown || { by_request_type: [], by_model: [] };
+    _requestLog.page = res.pagination?.page || 1;
+    _requestLog.pageSize = res.pagination?.page_size || _requestLog.pageSize || 20;
+    _requestLog.total = res.pagination?.total || 0;
+    _requestLog.totalPages = res.pagination?.total_pages || 1;
+    _requestLog.dateRange = res.filters?.date_range || _requestLog.dateRange || 'all';
+    _requestLog.requestType = res.filters?.request_type ?? _requestLog.requestType;
+    _requestLog.model = res.filters?.model ?? _requestLog.model;
+    renderRequestLogSummary();
+    renderRequestLogBreakdown();
+    renderRequestLogTable();
+    renderRequestLogPagination();
+  } catch (e) {
+    if (e.message !== 'Unauthorized') {
+      document.getElementById('requestLogTable').innerHTML = `<tr><td colspan="6" class="empty"><div class="icon">⚠️</div>${esc(e.message || '加载失败')}</td></tr>`;
+      document.getElementById('requestLogTypeSummary').innerHTML = '<div style="color:var(--red);font-size:12px">加载失败</div>';
+      document.getElementById('requestLogModelSummary').innerHTML = '<div style="color:var(--red);font-size:12px">加载失败</div>';
+      toast('加载请求日志失败: ' + e.message, 'error');
+    }
+  }
+}
+
+function renderRequestLogSummary() {
+  const summary = _requestLog.summary || {};
+  document.getElementById('requestLogTotal').textContent = fmtNum(summary.total_requests ?? 0);
+  document.getElementById('requestLogTokens').textContent = fmtNum(summary.total_tokens_approx ?? 0);
+  document.getElementById('requestLogSuccess').textContent = fmtNum(summary.success_count ?? 0);
+  document.getElementById('requestLogFailed').textContent = fmtNum(summary.failed_count ?? 0);
+}
+
+function renderRequestLogBreakdown() {
+  const typeContainer = document.getElementById('requestLogTypeSummary');
+  const modelContainer = document.getElementById('requestLogModelSummary');
+  const byType = _requestLog.breakdown?.by_request_type || [];
+  const byModel = _requestLog.breakdown?.by_model || [];
+
+  if (!byType.length) {
+    typeContainer.innerHTML = '<div style="color:var(--text2);font-size:12px">当前筛选下暂无数据</div>';
+  } else {
+    typeContainer.innerHTML = byType.map(item => `
+      <button
+        type="button"
+        title="点击按该请求类型筛选，再点一次取消"
+        onclick='applyRequestLogQuickFilterByType(${JSON.stringify(String(item.request_type || "unknown"))})'
+        style="display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:8px 10px;background:${_requestLog.requestType === (item.request_type || "unknown") ? 'rgba(99,102,241,.12)' : 'transparent'};border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;text-align:left"
+      >
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="badge badge-info">${esc(requestTypeLabel(item.request_type))}</span>
+        </div>
+        <div style="text-align:right;font-size:12px">
+          <div>${fmtNum(item.total_requests || 0)} 次</div>
+          <div style="color:var(--text2)">${fmtNum(item.total_tokens_approx || 0)} token</div>
+        </div>
+      </button>
+    `).join('');
+  }
+
+  if (!byModel.length) {
+    modelContainer.innerHTML = '<div style="color:var(--text2);font-size:12px">当前筛选下暂无数据</div>';
+  } else {
+    modelContainer.innerHTML = byModel.map(item => `
+      <button
+        type="button"
+        title="点击按该模型筛选，再点一次取消"
+        onclick='applyRequestLogQuickFilterByModel(${JSON.stringify(String(item.model || ""))})'
+        style="display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;padding:8px 10px;background:${_requestLog.model === (item.model || "") ? 'rgba(99,102,241,.12)' : 'transparent'};border:1px solid var(--border);border-radius:8px;color:var(--text);cursor:pointer;text-align:left"
+      >
+        <div style="min-width:0;flex:1">
+          <div style="font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><code>${esc(item.model || '-')}</code></div>
+        </div>
+        <div style="text-align:right;font-size:12px">
+          <div>${fmtNum(item.total_requests || 0)} 次</div>
+          <div style="color:var(--text2)">${fmtNum(item.total_tokens_approx || 0)} token</div>
+        </div>
+      </button>
+    `).join('');
+  }
+}
+
+function renderRequestLogTable() {
+  const tbody = document.getElementById('requestLogTable');
+  const logs = _requestLog.logs || [];
+  if (!logs.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty"><div class="icon">🧾</div>暂无请求日志</td></tr>';
+    return;
+  }
+  tbody.innerHTML = logs.map(item => {
+    const accountName = item.account_name || item.account_id || '-';
+    const accountSub = item.account_name && item.account_id ? `<div style="font-size:11px;color:var(--text2);margin-top:2px">${esc(item.account_id)}</div>` : '';
+    const resultBadge = item.success
+      ? '<span class="badge badge-active">成功</span>'
+      : '<span class="badge badge-failed">失败</span>';
+    const typeBadge = `<span class="badge badge-info">${esc(requestTypeLabel(item.request_type))}</span>`;
+    return `<tr>
+      <td>${esc(formatRequestLogTime(item.timestamp))}</td>
+      <td><div>${esc(accountName)}</div>${accountSub}</td>
+      <td>${typeBadge}</td>
+      <td><code style="font-size:11px">${esc(item.model || '-')}</code></td>
+      <td>${fmtNum(item.tokens_approx || 0)}</td>
+      <td>${resultBadge}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderRequestLogPagination() {
+  const total = _requestLog.total || 0;
+  const page = _requestLog.page || 1;
+  const pageSize = _requestLog.pageSize || 20;
+  const totalPages = _requestLog.totalPages || 1;
+  const start = total ? (page - 1) * pageSize + 1 : 0;
+  const end = total ? Math.min(page * pageSize, total) : 0;
+  document.getElementById('requestLogPageInfo').textContent = total
+    ? `${requestDateRangeLabel(_requestLog.dateRange)} · 第 ${page}/${totalPages} 页 · 显示 ${start}-${end} / 共 ${total} 条`
+    : '暂无数据';
+  document.getElementById('requestLogPrevBtn').disabled = page <= 1;
+  document.getElementById('requestLogNextBtn').disabled = page >= totalPages;
+  const pageSizeEl = document.getElementById('requestLogPageSize');
+  if (pageSizeEl && String(pageSizeEl.value) !== String(pageSize)) {
+    pageSizeEl.value = String(pageSize);
+  }
+  const dateRangeEl = document.getElementById('requestLogDateRange');
+  if (dateRangeEl && String(dateRangeEl.value) !== String(_requestLog.dateRange || 'all')) {
+    dateRangeEl.value = String(_requestLog.dateRange || 'all');
+  }
+  const requestTypeEl = document.getElementById('requestLogType');
+  if (requestTypeEl && String(requestTypeEl.value) !== String(_requestLog.requestType || '')) {
+    requestTypeEl.value = String(_requestLog.requestType || '');
+  }
+}
+
+function applyRequestLogFilters() {
+  _requestLog.dateRange = document.getElementById('requestLogDateRange')?.value || 'all';
+  _requestLog.requestType = document.getElementById('requestLogType')?.value || '';
+  _requestLog.model = (document.getElementById('requestLogModel')?.value || '').trim();
+  _requestLog.page = 1;
+  loadRequestLogs(1);
+}
+
+function applyRequestLogQuickFilterByType(requestType) {
+  const nextType = String(requestType || '').trim();
+  _requestLog.requestType = _requestLog.requestType === nextType ? '' : nextType;
+  _requestLog.page = 1;
+  const el = document.getElementById('requestLogType');
+  if (el) el.value = _requestLog.requestType;
+  loadRequestLogs(1);
+}
+
+function applyRequestLogQuickFilterByModel(model) {
+  const nextModel = String(model || '').trim();
+  _requestLog.model = _requestLog.model === nextModel ? '' : nextModel;
+  _requestLog.page = 1;
+  const el = document.getElementById('requestLogModel');
+  if (el) el.value = _requestLog.model;
+  loadRequestLogs(1);
+}
+
+function resetRequestLogFilters() {
+  _requestLog.dateRange = 'all';
+  _requestLog.requestType = '';
+  _requestLog.model = '';
+  _requestLog.page = 1;
+  document.getElementById('requestLogDateRange').value = 'all';
+  document.getElementById('requestLogType').value = '';
+  document.getElementById('requestLogModel').value = '';
+  loadRequestLogs(1);
+}
+
+function changeRequestLogPageSize(value) {
+  const parsed = parseInt(String(value || '20'), 10);
+  _requestLog.pageSize = [20, 50, 100].includes(parsed) ? parsed : 20;
+  _requestLog.page = 1;
+  loadRequestLogs(1);
+}
+
+function changeRequestLogPage(page) {
+  const nextPage = Math.max(1, Math.min(page, _requestLog.totalPages || 1));
+  _requestLog.page = nextPage;
+  loadRequestLogs(nextPage);
+}
+
 // ===================== Config Management =====================
 let _configs = [];
 let _configFilter = '';
+const _configTestResults = {};
 
 // Semantic grouping with icons and friendly names
 const CONFIG_GROUPS = {
-  '核心设置': { icon: '🌐', keys: ['RITA_UPSTREAM', 'RITA_ORIGIN', 'DISABLE_SSL_VERIFY', 'HOST', 'PORT'] },
-  '访问安全': { icon: '🔒', keys: ['AUTH_TOKEN', 'FLASK_SECRET'] },
+  '核心设置': { icon: '🌐', keys: ['RITA_UPSTREAM', 'RITA_ORIGIN', 'DISABLE_SSL_VERIFY', 'HOST', 'PORT', 'DEBUG'] },
+  '访问安全': { icon: '🔒', keys: ['AUTH_TOKEN', 'PROXY_API_KEY', 'FLASK_SECRET'] },
   '自动注册': { icon: '🤖', keys: ['AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH', 'AUTO_REGISTER_PASSWORD', 'AUTO_REGISTER_MIN_QUOTA', 'REGISTER_PROXY', 'MAIL_USE_PROXY'] },
   '验证码服务': { icon: '🧩', keys: ['CAPTCHA_PROVIDER', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_API_URL', 'OHMYCAPTCHA_LOCAL_KEY'] },
-  '邮件服务': { icon: '📧', keys: ['MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE', 'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE'] },
+  '邮件服务': { icon: '📧', keys: ['MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE', 'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE', 'MOEMAIL_CHANNELS_JSON'] },
   '健康检查': { icon: '🏥', keys: ['HEALTH_CHECK_INTERVAL'] },
 };
 
@@ -1375,7 +2094,11 @@ const CONFIG_GROUPS = {
 const CONFIG_DESC = {
   'RITA_UPSTREAM': 'Rita.ai 上游 API 地址，所有请求将转发到此 URL',
   'RITA_ORIGIN': '请求 Headers 中的 Origin，用于上游鉴权',
-  'AUTH_TOKEN': '管理面板登录密码，同时也是 /v1 接口 Bearer 鉴权密码；默认 981115',
+  'HOST': 'Flask 服务监听地址；修改后通常需要重启服务生效',
+  'PORT': 'Flask 服务监听端口；修改后通常需要重启服务生效',
+  'DEBUG': 'Flask Debug 开关；修改后通常需要重启服务生效',
+  'AUTH_TOKEN': '管理面板与 /api/* 管理接口登录密码；默认 981115',
+  'PROXY_API_KEY': '模型调用 API Key，供外部 OpenAI / Anthropic 协议客户端访问 /v1 接口时使用；留空时当前版本会兼容回退到 AUTH_TOKEN',
   'DISABLE_SSL_VERIFY': '是否跳过上游 SSL 证书验证（解决证书域名不匹配问题）',
   'HEALTH_CHECK_INTERVAL': '后台健康检查间隔时间（秒），默认 600',
   'AUTO_REGISTER_ENABLED': '启用后，当活跃账号低于最低数量时自动注册新账号',
@@ -1396,13 +2119,17 @@ const CONFIG_DESC = {
   'YYDSMAIL_API_BASE': 'YYDSMail API 基础 URL',
   'MOEMAIL_API_KEY': 'MoeMail API Key，用于创建邮箱与查询验证码',
   'MOEMAIL_API_BASE': 'MoeMail API 基础 URL',
+  'MOEMAIL_CHANNELS_JSON': 'MoeMail 多渠道 JSON 数组配置；支持 enabled 多选启用，启用多个时按轮询使用',
   'FLASK_SECRET': 'Flask 会话密钥（自动生成，一般无需修改）',
 };
 
 // Which keys are boolean toggles
 const CONFIG_BOOLEANS = new Set(['DISABLE_SSL_VERIFY', 'AUTO_REGISTER_ENABLED', 'MAIL_USE_PROXY']);
+const CONFIG_TEXTAREAS = new Set(['MOEMAIL_CHANNELS_JSON']);
 // Which keys are secrets (show/hide toggle)
-const CONFIG_SECRETS = new Set(['AUTH_TOKEN', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_KEY', 'GPTMAIL_API_KEY', 'YYDSMAIL_API_KEY', 'MOEMAIL_API_KEY', 'FLASK_SECRET', 'AUTO_REGISTER_PASSWORD']);
+const CONFIG_SECRETS = new Set(['AUTH_TOKEN', 'PROXY_API_KEY', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_KEY', 'GPTMAIL_API_KEY', 'YYDSMAIL_API_KEY', 'MOEMAIL_API_KEY', 'FLASK_SECRET', 'AUTO_REGISTER_PASSWORD']);
+const CAPTCHA_TEST_KEYS = new Set(['CAPTCHA_PROVIDER', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_API_URL', 'OHMYCAPTCHA_LOCAL_KEY']);
+const PROXY_TEST_KEYS = new Set(['REGISTER_PROXY']);
 const CONFIG_OPTIONS = {
   'CAPTCHA_PROVIDER': [
     { value: 'yescaptcha', label: 'yescaptcha' },
@@ -1481,9 +2208,23 @@ function renderConfigRow(c) {
   const value = c.value || '';
   const desc = CONFIG_DESC[key] || c.description || '';
   const isBool = CONFIG_BOOLEANS.has(key);
+  const isTextarea = CONFIG_TEXTAREAS.has(key);
   const isSecret = CONFIG_SECRETS.has(key);
   const selectOptions = CONFIG_OPTIONS[key] || null;
   const inputId = 'cfg-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+  const testResultId = 'cfgtest-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+  const testButtons = [];
+  if (CAPTCHA_TEST_KEYS.has(key)) {
+    testButtons.push(`<button class="cfg-test-btn" onclick="testCaptchaConfigInline('${esc(key)}', this)">测试连通性</button>`);
+  }
+  if (PROXY_TEST_KEYS.has(key)) {
+    testButtons.push(`<button class="cfg-test-btn" onclick="testProxyConfigInline('${esc(key)}', this)">测试代理</button>`);
+  }
+  const testBtnHtml = testButtons.join('');
+  const testResult = _configTestResults[key];
+  const testResultHtml = testResult
+    ? `<div class="cfg-test-result ${esc(testResult.type || 'info')}" id="${testResultId}">${esc(testResult.text || '')}</div>`
+    : `<div class="cfg-test-result" id="${testResultId}" style="display:none"></div>`;
 
   let editHtml = '';
   if (isBool) {
@@ -1503,6 +2244,14 @@ function renderConfigRow(c) {
         <button class="cfg-reveal-btn" onclick="toggleReveal(this)" title="显示/隐藏" type="button">👁</button>
       </div>
       <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+      ${testBtnHtml}
+    </div>`;
+  } else if (isTextarea) {
+    editHtml = `<div class="cfg-edit-row" style="flex-direction:column;align-items:stretch">
+      <textarea class="cfg-input" id="${inputId}" rows="8" spellcheck="false" style="min-height:160px;font-family:monospace;resize:vertical">${esc(value)}</textarea>
+      <div style="display:flex;justify-content:flex-end;margin-top:8px">
+        <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+      </div>
     </div>`;
   } else if (selectOptions) {
     editHtml = `<div class="cfg-edit-row">
@@ -1510,11 +2259,13 @@ function renderConfigRow(c) {
         ${selectOptions.map(option => `<option value="${esc(option.value)}" ${option.value === value ? 'selected' : ''}>${esc(option.label)}</option>`).join('')}
       </select>
       <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+      ${testBtnHtml}
     </div>`;
   } else {
     editHtml = `<div class="cfg-edit-row">
       <input type="text" class="cfg-input" id="${inputId}" value="${esc(value)}" placeholder="未设置">
       <button class="cfg-save-btn" onclick="saveConfigInline('${esc(key)}', document.getElementById('${inputId}').value, this)">保存</button>
+      ${testBtnHtml}
     </div>`;
   }
 
@@ -1524,13 +2275,145 @@ function renderConfigRow(c) {
     </div>
     ${desc ? `<div class="cfg-desc">${esc(desc)}</div>` : ''}
     ${editHtml}
+    ${testResultHtml}
   </div>`;
+}
+
+function setConfigTestResult(key, type, text) {
+  const result = { type: type || 'info', text: text || '' };
+  _configTestResults[key] = result;
+  const el = document.getElementById('cfgtest-' + key.replace(/[^a-zA-Z0-9]/g, '_'));
+  if (!el) return;
+  el.className = `cfg-test-result ${result.type}`;
+  el.textContent = result.text;
+  el.style.display = result.text ? 'block' : 'none';
+}
+
+function clearConfigTestResult(key) {
+  delete _configTestResults[key];
+  const el = document.getElementById('cfgtest-' + key.replace(/[^a-zA-Z0-9]/g, '_'));
+  if (!el) return;
+  el.className = 'cfg-test-result';
+  el.textContent = '';
+  el.style.display = 'none';
 }
 
 function toggleReveal(btn) {
   const input = btn.parentElement.querySelector('input');
   if (input.type === 'password') { input.type = 'text'; btn.textContent = '🙈'; }
   else { input.type = 'password'; btn.textContent = '👁'; }
+}
+
+function getConfigInputId(key) {
+  return 'cfg-' + String(key || '').replace(/[^a-zA-Z0-9]/g, '_');
+}
+
+function getConfigDraftValue(key) {
+  const el = document.getElementById(getConfigInputId(key));
+  if (el) {
+    if (el.type === 'checkbox') return el.checked ? '1' : '0';
+    return el.value;
+  }
+  const found = (_configs || []).find(item => item.key === key);
+  return found ? (found.value || '') : '';
+}
+
+function buildCaptchaTestPayload() {
+  return {
+    provider: getConfigDraftValue('CAPTCHA_PROVIDER') || 'yescaptcha',
+    yescaptcha_key: getConfigDraftValue('YESCAPTCHA_KEY'),
+    ohmycaptcha_local_api_url: getConfigDraftValue('OHMYCAPTCHA_LOCAL_API_URL'),
+    ohmycaptcha_local_key: getConfigDraftValue('OHMYCAPTCHA_LOCAL_KEY'),
+    register_proxy: getConfigDraftValue('REGISTER_PROXY'),
+    disable_ssl_verify: getConfigDraftValue('DISABLE_SSL_VERIFY'),
+  };
+}
+
+function buildProxyTestPayload() {
+  return {
+    proxy: getConfigDraftValue('REGISTER_PROXY'),
+    disable_ssl_verify: getConfigDraftValue('DISABLE_SSL_VERIFY'),
+  };
+}
+
+async function testCaptchaConfigInline(key, triggerEl) {
+  const rowId = 'cfgrow-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+  const row = document.getElementById(rowId);
+  const btn = triggerEl;
+  const originalText = btn?.textContent || '测试连通性';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '测试中...';
+  }
+  try {
+    const res = await api('POST', '/api/captcha/test', buildCaptchaTestPayload());
+    if (res.ok) {
+      if (row) {
+        row.classList.add('saved');
+        setTimeout(() => row.classList.remove('saved'), 1500);
+      }
+      if (btn) {
+        btn.classList.add('saved');
+        btn.textContent = '✓ 连通正常';
+      }
+      toast(res.message || `${res.provider_label || res.provider || '验证码服务'} 连通正常`, 'success');
+    } else {
+      toast(res.message || res.error || '连通性测试失败', 'error');
+    }
+  } catch (e) {
+    const payload = e.payload || {};
+    toast(payload.message || payload.error || e.message || '连通性测试失败', 'error');
+  } finally {
+    if (btn) {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.classList.remove('saved');
+        btn.textContent = originalText;
+      }, 1500);
+    }
+  }
+}
+
+async function testProxyConfigInline(key, triggerEl) {
+  const rowId = 'cfgrow-' + key.replace(/[^a-zA-Z0-9]/g, '_');
+  const row = document.getElementById(rowId);
+  const btn = triggerEl;
+  const originalText = btn?.textContent || '测试代理';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '测试中...';
+  }
+  try {
+    const res = await api('POST', '/api/proxy/test', buildProxyTestPayload());
+    if (res.ok) {
+      if (row) {
+        row.classList.add('saved');
+        setTimeout(() => row.classList.remove('saved'), 1500);
+      }
+      if (btn) {
+        btn.classList.add('saved');
+        btn.textContent = `✓ ${res.loc || 'OK'}`;
+      }
+      const message = res.message || `代理连通正常，地区=${res.loc || '?'}，出口 IP=${res.ip || '?'}`;
+      setConfigTestResult(key, 'success', `最近测试：可用 | 地区 ${res.loc || '?'} | IP ${res.ip || '?'}${res.colo ? ` | 节点 ${res.colo}` : ''}`);
+      toast(message, 'success');
+    } else {
+      setConfigTestResult(key, 'error', `最近测试：失败 | ${res.message || res.error || '未知错误'}`);
+      toast(res.message || res.error || '代理测试失败', 'error');
+    }
+  } catch (e) {
+    const payload = e.payload || {};
+    setConfigTestResult(key, 'error', `最近测试：失败 | ${payload.message || payload.error || e.message || '未知错误'}`);
+    toast(payload.message || payload.error || e.message || '代理测试失败', 'error');
+  } finally {
+    if (btn) {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.classList.remove('saved');
+        btn.textContent = originalText;
+      }, 1500);
+    }
+  }
 }
 
 async function saveConfigInline(key, value, triggerEl) {
@@ -1548,6 +2431,9 @@ async function saveConfigInline(key, value, triggerEl) {
 
   try {
     await api('PUT', '/api/config', { configs: { [key]: value } });
+    if (PROXY_TEST_KEYS.has(key)) {
+      clearConfigTestResult(key);
+    }
 
     // Success feedback animation
     if (row) {
@@ -1574,14 +2460,14 @@ async function saveConfigInline(key, value, triggerEl) {
       'AUTO_REGISTER_ENABLED', 'AUTO_REGISTER_MIN_ACTIVE', 'AUTO_REGISTER_BATCH',
       'CAPTCHA_PROVIDER', 'YESCAPTCHA_KEY', 'OHMYCAPTCHA_LOCAL_API_URL', 'OHMYCAPTCHA_LOCAL_KEY',
       'MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE',
-      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE',
+      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE', 'MOEMAIL_CHANNELS_JSON',
       'REGISTER_PROXY', 'MAIL_USE_PROXY'
     ].includes(key)) {
       loadRegConfig();
     }
     if ([
       'MAIL_PROVIDER_DEFAULT', 'GPTMAIL_API_KEY', 'GPTMAIL_API_BASE',
-      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE'
+      'YYDSMAIL_API_KEY', 'YYDSMAIL_API_BASE', 'MOEMAIL_API_KEY', 'MOEMAIL_API_BASE', 'MOEMAIL_CHANNELS_JSON'
     ].includes(key)) {
       loadMailStatus();
     }
@@ -1624,6 +2510,7 @@ setInterval(() => {
   if (!document.getElementById('loginOverlay').classList.contains('show')) {
     if (_activeTab === 'accounts') loadAccounts();
     if (_activeTab === 'register') loadRegConfig();
+    if (_activeTab === 'request-logs') loadRequestLogs();
     if (_activeTab === 'chat') {} // Don't auto-reload chat
   }
 }, 30000);

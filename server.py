@@ -11,18 +11,48 @@ import re
 import time
 import hashlib
 import datetime
+import threading
 import requests
-from dotenv import load_dotenv
+from pathlib import Path
+from dotenv import load_dotenv, dotenv_values
 from flask import Flask, request, Response, jsonify, render_template, session
 from threading import Lock
 
 # MUST load .env before importing AccountManager (which reads env vars at module level)
 load_dotenv()
 
+BASE_DIR = Path(__file__).resolve().parent
+ENV_FILE = BASE_DIR / ".env"
+ENV_EXAMPLE_FILE = BASE_DIR / ".env.example"
+PRICE_DOC_FILE = BASE_DIR / "docs" / "价格.md"
+
 from accounts import AccountManager
 import auto_register
 from quota import get_cost, get_all_costs
 from database import get_db
+from adapters.openai_protocol import (
+    build_rita_messages as build_rita_messages_v2,
+    inject_tool_prompt as inject_tool_prompt_v2,
+    parse_tool_response as parse_tool_response_v2,
+    responses_input_to_messages,
+    make_responses_base,
+    split_text_chunks,
+)
+from adapters.anthropic_protocol import (
+    anthropic_messages_to_openai_chat,
+    estimate_anthropic_tokens,
+    build_anthropic_message_response,
+    build_anthropic_stream_events,
+    parse_tool_calls_from_text,
+)
+from services.rita_gateway import RitaGateway, collect_rita_response, iter_rita_sse
+from services.rita_dispatch import acquire_lease, mark_failure, mark_success, NoAvailableAccountError
+from routes.protocol_handlers import (
+    handle_chat_completions_api,
+    handle_anthropic_count_tokens,
+    handle_anthropic_messages_api,
+    handle_responses_api,
+)
 
 # ===================== Configuration =====================
 DEBUG_MODE = os.getenv("DEBUG", "1") == "1"
@@ -34,14 +64,189 @@ PORT = int(os.getenv("PORT", "10089"))
 DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0") == "1"
 AUTH_TOKEN = os.getenv("AUTH_TOKEN", "981115")
 
+rita_gateway = RitaGateway(UPSTREAM_URL, disable_ssl_verify=DISABLE_SSL_VERIFY)
+
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET", os.urandom(24).hex())
 acm = AccountManager()
 _conv_lock = Lock()
 
 # ===================== Auth Middleware =====================
+def _load_env_file_values(path: Path) -> dict:
+    """读取 .env 文件中的键值对。"""
+    if not path.exists():
+        return {}
+    try:
+        values = dotenv_values(path)
+    except Exception:
+        return {}
+    result = {}
+    for key, value in values.items():
+        key_text = str(key or "").strip()
+        if not key_text:
+            continue
+        result[key_text] = "" if value is None else str(value)
+    return result
+
+
+def _format_env_value(value) -> str:
+    """将值格式化为可写回 .env 的字符串。"""
+    text = "" if value is None else str(value)
+    if not text:
+        return ""
+    if "\n" in text or text != text.strip() or "#" in text:
+        return json.dumps(text, ensure_ascii=False)
+    return text
+
+
+def _upsert_env_value(key: str, value, path: Path = ENV_FILE):
+    """更新 .env 中的单个键；若不存在则追加。"""
+    key_text = str(key or "").strip()
+    if not key_text:
+        return
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        content = path.read_text(encoding="utf-8")
+        lines = content.splitlines()
+    else:
+        content = ""
+        lines = []
+
+    pattern = re.compile(rf"^(\s*(?:export\s+)?{re.escape(key_text)}\s*=\s*).*$")
+    replacement = f"{key_text}={_format_env_value(value)}"
+    replaced = False
+    new_lines = []
+    for line in lines:
+        if pattern.match(line):
+            new_lines.append(replacement)
+            replaced = True
+        else:
+            new_lines.append(line)
+
+    if not replaced:
+        if new_lines and new_lines[-1].strip():
+            new_lines.append("")
+        new_lines.append(replacement)
+
+    new_content = "\n".join(new_lines).rstrip("\n") + "\n"
+    if new_content != content:
+        path.write_text(new_content, encoding="utf-8")
+
+
+def _get_merged_config_rows() -> list[dict]:
+    """合并 DB、.env、.env.example，供面板统一展示。"""
+    db = get_db()
+    db_rows = db.get_all_config()
+    merged = {}
+    runtime_defaults = {
+        "HOST": str(HOST or ""),
+        "PORT": str(PORT or ""),
+        "DEBUG": "1" if DEBUG_MODE else "0",
+        "FLASK_SECRET": str(os.getenv("FLASK_SECRET", "") or ""),
+    }
+
+    for row in db_rows:
+        key = str(row["key"] or "").strip()
+        if not key:
+            continue
+        merged[key] = {
+            "key": key,
+            "value": "" if row["value"] is None else str(row["value"]),
+            "description": str(row.get("description", "") or ""),
+        }
+
+    for source in (_load_env_file_values(ENV_EXAMPLE_FILE), _load_env_file_values(ENV_FILE)):
+        for key, value in source.items():
+            if key not in merged:
+                merged[key] = {"key": key, "value": value, "description": ""}
+            elif not str(merged[key].get("value", "") or "").strip() and str(value or "").strip():
+                merged[key]["value"] = value
+
+    for key, value in runtime_defaults.items():
+        if key not in merged:
+            merged[key] = {"key": key, "value": value, "description": ""}
+
+    return [merged[key] for key in sorted(merged.keys())]
+
+
+def _parse_bool_value(value, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_cf_trace(text: str) -> dict:
+    result = {}
+    for line in str(text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key_text = str(key or "").strip()
+        if not key_text:
+            continue
+        result[key_text] = str(value or "").strip()
+    return result
+
+
+def _probe_register_proxy(proxy: str, disable_ssl_verify: bool = False) -> dict:
+    proxy_url = auto_register._normalize_proxy_value(proxy)
+    if not proxy_url:
+        return {
+            "ok": False,
+            "proxy": "",
+            "message": "代理地址未设置",
+            "error": "proxy is empty",
+            "loc": None,
+            "ip": None,
+            "colo": None,
+            "trace": None,
+        }
+
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        resp = session.get(
+            "https://cloudflare.com/cdn-cgi/trace",
+            timeout=8,
+            verify=not disable_ssl_verify,
+            proxies=auto_register._build_http_proxies(proxy_url),
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+        trace = _parse_cf_trace(resp.text)
+        loc = trace.get("loc")
+        ip = trace.get("ip")
+        colo = trace.get("colo")
+        return {
+            "ok": True,
+            "proxy": proxy_url,
+            "message": f"代理连通正常，地区={loc or '?'}，出口 IP={ip or '?'}",
+            "error": "",
+            "loc": loc,
+            "ip": ip,
+            "colo": colo,
+            "trace": trace,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "proxy": proxy_url,
+            "message": f"代理测试失败：{exc}",
+            "error": str(exc),
+            "loc": None,
+            "ip": None,
+            "colo": None,
+            "trace": None,
+        }
+    finally:
+        session.close()
+
+
 def _get_auth_token() -> str:
-    """实时读取面板/API密码，优先数据库配置，回退环境变量默认值。"""
+    """实时读取管理面板密码，优先数据库配置，回退环境变量默认值。"""
     try:
         row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("AUTH_TOKEN",))
         if row is not None:
@@ -51,20 +256,104 @@ def _get_auth_token() -> str:
     return str(AUTH_TOKEN or "").strip()
 
 
+def _get_proxy_api_key() -> str:
+    """读取对外模型调用 API Key；未显式配置时回退 AUTH_TOKEN 以保持兼容。"""
+    try:
+        row = get_db().fetchone("SELECT value FROM config WHERE key=?", ("PROXY_API_KEY",))
+        if row is not None and str(row["value"] or "").strip():
+            return str(row["value"] or "").strip()
+    except Exception:
+        pass
+    env_proxy_key = str(os.getenv("PROXY_API_KEY", "") or "").strip()
+    if env_proxy_key:
+        return env_proxy_key
+    return _get_auth_token()
+
+
+def _normalize_model_price_key(value: str) -> str:
+    """将模型名归一化，便于和 docs/价格.md 做宽松匹配。"""
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _load_price_doc_index() -> tuple[dict[str, int], dict[str, int], dict]:
+    """解析 docs/价格.md 中的模型积分表。"""
+    exact: dict[str, int] = {}
+    normalized: dict[str, int] = {}
+    meta = {
+        "path": str(PRICE_DOC_FILE.relative_to(BASE_DIR)),
+        "source": "",
+        "updated_at": "",
+        "total": 0,
+    }
+    try:
+        lines = PRICE_DOC_FILE.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        meta["error"] = str(e)
+        return exact, normalized, meta
+
+    row_pattern = re.compile(r"^\|\s*\d+\s*\|\s*(.*?)\s*\|\s*(\d+)\s*\|$")
+    for raw_line in lines:
+        line = raw_line.strip()
+        if line.startswith("> 数据来源："):
+            meta["source"] = line.split("：", 1)[1].strip()
+            continue
+        if line.startswith("> 更新时间："):
+            meta["updated_at"] = line.split("：", 1)[1].strip()
+            continue
+        match = row_pattern.match(line)
+        if not match:
+            continue
+        model_name = match.group(1).strip()
+        points = int(match.group(2))
+        exact[model_name.lower()] = points
+        normalized[_normalize_model_price_key(model_name)] = points
+
+    meta["total"] = len(exact)
+    return exact, normalized, meta
+
+
+def _lookup_model_points(model_name: str, exact: dict[str, int], normalized: dict[str, int]) -> int | None:
+    """优先按原名匹配，不命中时走归一化匹配。"""
+    exact_key = str(model_name or "").strip().lower()
+    if exact_key in exact:
+        return exact[exact_key]
+    normalized_key = _normalize_model_price_key(model_name)
+    if normalized_key and normalized_key in normalized:
+        return normalized[normalized_key]
+    return None
+
+
 def _check_auth() -> bool:
-    """Return True if the request is authenticated (or auth is disabled)."""
+    """管理面板鉴权。"""
     auth_token = _get_auth_token()
     if not auth_token:
         return True
-    # Check Authorization header
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer ") and auth_header[7:] == auth_token:
         return True
-    # Check query param
     if request.args.get("auth") == auth_token:
         return True
-    # Check session cookie
     if session.get("auth_token") == auth_token:
+        return True
+    return False
+
+
+def _check_proxy_auth() -> bool:
+    """/v1 协议调用鉴权：支持 OpenAI Bearer 与 Anthropic x-api-key。"""
+    proxy_api_key = _get_proxy_api_key()
+    if not proxy_api_key:
+        return True
+    # 管理面板首页的对话/模型请求走同源 fetch，会自动带上登录 session。
+    # 这里补一个 session 兜底，避免面板已登录却仍被 /v1/* 当成外部调用拦下。
+    auth_token = _get_auth_token()
+    if auth_token and session.get("auth_token") == auth_token:
+        return True
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer ") and auth_header[7:] == proxy_api_key:
+        return True
+    if request.headers.get("x-api-key", "").strip() == proxy_api_key:
+        return True
+    if request.args.get("auth") == proxy_api_key:
         return True
     return False
 
@@ -77,9 +366,9 @@ def require_auth():
     # Allow login and auth-check endpoints
     if path in ("/api/login", "/api/auth/check"):
         return None
-    # /v1/* proxy endpoints: check Bearer token (OpenAI client style)
+    # /v1/* proxy endpoints: check PROXY_API_KEY (OpenAI / Anthropic style)
     if path.startswith("/v1/"):
-        if _get_auth_token() and not _check_auth():
+        if _get_proxy_api_key() and not _check_proxy_auth():
             return jsonify({"error": {"message": "Incorrect API key provided", "type": "invalid_request_error", "code": "invalid_api_key"}}), 401
         return None
     # /api/* and /debug/*: require auth
@@ -138,6 +427,212 @@ def log(msg, level="INFO"):
              "ERROR": "\033[91m", "SUCCESS": "\033[92m"}.get(level, "")
     print(f"{color}[{time.strftime('%H:%M:%S')}] {msg}\033[0m")
 
+
+_manual_register_lock = Lock()
+_manual_register_task: dict | None = None
+
+
+def _manual_register_public(task: dict | None, include_logs: bool = False) -> dict | None:
+    if not task:
+        return None
+    result = {
+        "id": task["id"],
+        "status": task["status"],
+        "requested": task["requested"],
+        "registered": len(task.get("accounts") or []),
+        "stop_requested": bool(task.get("stop_requested")),
+        "captcha_provider": task.get("captcha_provider") or "yescaptcha",
+        "created_at": task["created_at"],
+        "updated_at": task["updated_at"],
+        "error": task.get("error") or "",
+        "accounts": list(task.get("accounts") or []),
+    }
+    if include_logs:
+        result["logs"] = [dict(item) for item in task.get("logs") or []]
+    return result
+
+
+def _get_manual_register_task(task_id: str | None = None, include_logs: bool = False) -> dict | None:
+    with _manual_register_lock:
+        if not _manual_register_task:
+            return None
+        if task_id and _manual_register_task["id"] != task_id:
+            return None
+        return _manual_register_public(_manual_register_task, include_logs=include_logs)
+
+
+def _append_manual_register_log(task_id: str, msg: str, level: str = "INFO"):
+    global _manual_register_task
+    text = str(msg or "")
+    level_name = str(level or "INFO").upper()
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task or task["id"] != task_id:
+            return
+        task["seq"] += 1
+        task["updated_at"] = time.time()
+        task.setdefault("logs", []).append({
+            "seq": task["seq"],
+            "ts": task["updated_at"],
+            "level": level_name,
+            "message": text,
+        })
+        if len(task["logs"]) > 1000:
+            task["logs"] = task["logs"][-1000:]
+    log(f"[manual-register:{task_id[:8]}] {text}", level_name)
+
+
+def _set_manual_register_status(task_id: str, status: str, **updates):
+    global _manual_register_task
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task or task["id"] != task_id:
+            return
+        task["status"] = status
+        task["updated_at"] = time.time()
+        for key, value in updates.items():
+            task[key] = value
+
+
+def _manual_register_should_stop(task_id: str) -> bool:
+    with _manual_register_lock:
+        task = _manual_register_task
+        return bool(task and task["id"] == task_id and task.get("stop_requested"))
+
+
+def _run_manual_register_task(task_id: str, count: int, captcha_provider: str):
+    def task_log(message: str, level: str = "INFO"):
+        _append_manual_register_log(task_id, message, level)
+
+    task_log(f"🚀 手动注册任务已启动，请求数量={count}，打码={captcha_provider or 'yescaptcha'}", "INFO")
+    try:
+        auto_register.set_thread_log_fn(task_log)
+        results = auto_register.auto_register_batch(
+            count=count,
+            account_manager=acm,
+            upstream_url=UPSTREAM_URL,
+            origin=RITA_ORIGIN,
+            captcha_provider_override=captcha_provider,
+            should_stop=lambda: _manual_register_should_stop(task_id),
+        )
+        _set_manual_register_status(task_id, "completed", accounts=list(results or []), error="")
+        task_log(f"✅ 手动注册完成：成功 {len(results)}/{count}", "SUCCESS")
+    except auto_register.RegistrationStopped as e:
+        partial = list(getattr(e, "results", []) or [])
+        _set_manual_register_status(task_id, "stopped", accounts=partial, error="")
+        task_log(f"⛔ 已按请求停止手动注册，已成功 {len(partial)}/{count}", "WARNING")
+    except Exception as e:
+        _set_manual_register_status(task_id, "failed", error=str(e))
+        task_log(f"❌ 手动注册异常: {e}", "ERROR")
+    finally:
+        auto_register.set_thread_log_fn(None)
+
+
+def _start_manual_register_task(count: int, captcha_provider: str) -> tuple[dict | None, str | None]:
+    global _manual_register_task
+    with _manual_register_lock:
+        if _manual_register_task and _manual_register_task["status"] in {"running", "stopping"}:
+            return _manual_register_public(_manual_register_task), "busy"
+        task_id = hashlib.md5(f"{time.time()}-{count}-{captcha_provider}".encode()).hexdigest()[:16]
+        _manual_register_task = {
+            "id": task_id,
+            "status": "running",
+            "requested": count,
+            "captcha_provider": captcha_provider or "yescaptcha",
+            "stop_requested": False,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "seq": 0,
+            "logs": [],
+            "accounts": [],
+            "error": "",
+        }
+    threading.Thread(
+        target=_run_manual_register_task,
+        args=(task_id, count, captcha_provider),
+        daemon=True,
+        name=f"manual-register-{task_id[:8]}",
+    ).start()
+    return _get_manual_register_task(task_id), None
+
+
+def _request_stop_manual_register(task_id: str | None = None) -> dict | None:
+    global _manual_register_task
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task:
+            return None
+        if task_id and task["id"] != task_id:
+            return None
+        if task["status"] not in {"running", "stopping"}:
+            return _manual_register_public(task)
+        task["stop_requested"] = True
+        task["status"] = "stopping"
+        task["updated_at"] = time.time()
+    _append_manual_register_log(task["id"], "⛔ 收到强行终止请求，正在安全停止当前流程...", "WARNING")
+    return _get_manual_register_task(task["id"])
+
+
+def _approx_tokens(messages: list, response_text: str = "") -> int:
+    msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
+    return (msg_chars + len(response_text or "")) // 4
+
+
+def _ensure_conversation(headers: dict, rita_model: str, existing_chat_id: int = 0) -> int:
+    if existing_chat_id:
+        return existing_chat_id
+    try:
+        chat_id = rita_gateway.create_conversation(headers, rita_model)
+        log(f"📝 Auto-created conversation: chat_id={chat_id}", "DEBUG")
+        return chat_id
+    except Exception as e:
+        log(f"⚠️ Failed to create conversation: {e}", "WARNING")
+        return 0
+
+
+def _should_reset_conversation(error_message: str) -> bool:
+    message = str(error_message or "").lower()
+    return "conversation does not exist" in message or "param invalid" in message
+
+
+def _make_anthropic_error(message: str, error_type: str = "invalid_request_error", status: int = 400):
+    return jsonify({"type": "error", "error": {"type": error_type, "message": message}}), status
+
+
+def _build_protocol_deps() -> dict:
+    return {
+        "acm": acm,
+        "RITA_ORIGIN": RITA_ORIGIN,
+        "rita_gateway": rita_gateway,
+        "resolve_model": _resolve_rita_model_for_request,
+        "get_or_create_conversation": get_or_create_conversation,
+        "update_conversation_state": update_conversation_state,
+        "build_rita_messages": build_rita_messages_v2,
+        "inject_tool_prompt": inject_tool_prompt_v2,
+        "tool_prompt_cache": _tool_prompt_cache,
+        "parse_tool_response": parse_tool_response_v2,
+        "log": log,
+        "get_cost": get_cost,
+        "acquire_lease": acquire_lease,
+        "mark_success": mark_success,
+        "mark_failure": mark_failure,
+        "NoAvailableAccountError": NoAvailableAccountError,
+        "estimate_anthropic_tokens": estimate_anthropic_tokens,
+        "anthropic_messages_to_openai_chat": anthropic_messages_to_openai_chat,
+        "build_anthropic_message_response": build_anthropic_message_response,
+        "build_anthropic_stream_events": build_anthropic_stream_events,
+        "parse_tool_calls_from_text": parse_tool_calls_from_text,
+        "responses_input_to_messages": responses_input_to_messages,
+        "make_responses_base": make_responses_base,
+        "split_text_chunks": split_text_chunks,
+        "should_reset_conversation": _should_reset_conversation,
+        "ensure_conversation": _ensure_conversation,
+        "increment_stats": _increment_stats,
+        "collect_rita_response": collect_rita_response,
+        "iter_rita_sse": iter_rita_sse,
+        "make_anthropic_error": _make_anthropic_error,
+    }
+
 # ===================== Message Format Translation =====================
 def extract_text(content) -> str:
     if isinstance(content, str):
@@ -170,17 +665,76 @@ def build_rita_messages(messages: list) -> list:
     return rita_msgs
 
 # ===================== Model Resolution =====================
+def _model_alias_signature(value: str) -> tuple[str, ...]:
+    return tuple(sorted(re.findall(r"[a-z]+|\d+", str(value or "").lower())))
+
+
+def _refresh_model_cache(headers: dict) -> None:
+    global _models_cache, _models_cache_ts
+    now = time.time()
+    upstream = rita_gateway.fetch_models(headers)
+    data = []
+    for cat in upstream.get("data", {}).get("category_models", []):
+        cat_name = cat.get("name", "")
+        for model in cat.get("models", []):
+            model_id = model.get("key", "")
+            data.append({
+                "id": model_id,
+                "object": "model",
+                "created": 0,
+                "owned_by": "rita",
+                "name": model.get("name", model_id),
+                "description": model.get("desc", ""),
+                "quota": model.get("quota", 0),
+                "tool": model.get("tool", ""),
+                "ability": model.get("ability", ""),
+                "category": cat_name,
+            })
+    _models_cache = {"object": "list", "data": data}
+    _models_cache_ts = now
+
+
+def _get_model_catalog(force_refresh: bool = False) -> dict:
+    """统一获取 Rita 模型目录，供 /v1/models 和管理面板复用。"""
+    global _models_cache, _models_cache_ts
+    now = time.time()
+    if not force_refresh and _models_cache and now - _models_cache_ts < MODELS_CACHE_TTL:
+        return _models_cache
+
+    acc, _ = acm.next()
+    if not acc:
+        raise RuntimeError("no accounts configured")
+
+    try:
+        _refresh_model_cache(acm.upstream_headers(acc, RITA_ORIGIN))
+        acm.mark_ok(acc)
+        return _models_cache
+    except Exception as e:
+        acm.mark_fail(acc, str(e))
+        raise
+
+
+def _resolve_rita_model_for_request(model: str, headers: dict | None = None) -> str:
+    resolved = resolve_rita_model(model)
+    if resolved.startswith("model_"):
+        return resolved
+    if headers:
+        try:
+            _refresh_model_cache(headers)
+            resolved = resolve_rita_model(model)
+            if resolved.startswith("model_"):
+                return resolved
+        except Exception as e:
+            log(f"⚠️ Failed to refresh model cache for alias resolution: {e}", "WARNING")
+    return resolved
+
+
 def resolve_rita_model(model: str) -> str:
-    """Resolve client model name to Rita's model_xxx format.
-    If already in model_xxx format, pass through directly.
-    Otherwise, try to match known aliases.
-    """
-    # Already in Rita format
+    """Resolve client model name to Rita's model_xxx format."""
     if model.startswith("model_"):
         return model
 
     model_lower = model.lower()
-    # Static alias mappings (will be supplemented by dynamic catalog)
     mappings = {
         "rita": "model_25",
         "rita-pro": "model_37",
@@ -191,83 +745,22 @@ def resolve_rita_model(model: str) -> str:
         if model_lower.startswith(key):
             return value
 
-    # Dynamic mapping: try to find from cached model catalog
+    requested_signature = _model_alias_signature(model)
     if _models_cache:
-        for m in _models_cache.get("data", []):
-            mid = m.get("id", "")
-            mname = m.get("name", "").lower()
-            # Match by name (e.g., "GPT-4o" -> "model_xx")
-            if model_lower == mname or model_lower in mname or mname.startswith(model_lower):
-                return mid
+        for item in _models_cache.get("data", []):
+            model_id = item.get("id", "")
+            model_name = item.get("name", "")
+            model_name_lower = str(model_name).lower()
+            if model_lower == model_name_lower or model_lower in model_name_lower or model_name_lower in model_lower:
+                return model_id
+            if requested_signature and requested_signature == _model_alias_signature(model_name):
+                return model_id
 
-    # Fallback: return as-is (let upstream handle it)
     return model
 
+
 # ===================== Tool Calling =====================
-_TOOL_PROMPT_TMPL = (
-    "You have access to the following tools. When you need to use a tool, "
-    "respond ONLY with a JSON object (no other text):\n"
-    "{tool_defs}\n"
-    "Format:\n"
-    '  Single tool: {{"tool":"tool_name","args":{{"param":"value"}}}}\n'
-    '  Multiple tools: {{"calls":[{{"tool":"name","args":{{}}}}]}}\n'
-    "If no tool is needed, respond normally.\n\n"
-    "{query}"
-)
 _tool_prompt_cache: dict[str, str] = {}
-
-def _tools_hash(tools: list) -> str:
-    key = json.dumps([
-        t.get("name") or t.get("function", {}).get("name", "")
-        for t in tools
-    ], ensure_ascii=False)
-    return hashlib.md5(key.encode()).hexdigest()[:12]
-
-def _compact_tools(tools: list) -> str:
-    parts = []
-    for t in tools:
-        if t.get("type") == "function":
-            fn = t["function"]
-            name = fn.get("name", "")
-            props = fn.get("parameters", {}).get("properties", {})
-            req = set(fn.get("parameters", {}).get("required", []))
-        elif "input_schema" in t:
-            name = t.get("name", "")
-            props = t.get("input_schema", {}).get("properties", {})
-            req = set(t.get("input_schema", {}).get("required", []))
-        else:
-            continue
-        params = [f"{p}{'*' if p in req else '?'}" for p in props]
-        parts.append(f"{name}({','.join(params)})" if params else name)
-    return " | ".join(parts)
-
-def inject_tool_prompt(user_text: str, tools: list) -> str:
-    th = _tools_hash(tools)
-    if th not in _tool_prompt_cache:
-        _tool_prompt_cache[th] = _compact_tools(tools)
-    return _TOOL_PROMPT_TMPL.format(tool_defs=_tool_prompt_cache[th], query=user_text)
-
-_JSON_RE = re.compile(r'\{.*\}', re.DOTALL)
-
-def parse_tool_response(raw: str) -> dict:
-    m = _JSON_RE.search(raw)
-    if not m:
-        return {"type": "text", "text": raw}
-    try:
-        obj = json.loads(m.group())
-    except json.JSONDecodeError:
-        return {"type": "text", "text": raw}
-    if "tool" in obj and "args" in obj:
-        return {"type": "tool_calls", "calls": [{"name": obj["tool"], "input": obj["args"]}]}
-    calls_raw = obj.get("calls", [])
-    if calls_raw:
-        calls = []
-        for c in calls_raw:
-            name = c.get("tool") or c.get("name", "")
-            inp = c.get("args") or c.get("parameters") or c.get("input") or {}
-            calls.append({"name": name, "input": inp})
-        return {"type": "tool_calls", "calls": calls}
-    return {"type": "text", "text": raw}
 
 # ===================== Conversation State =====================
 def get_conv_key(messages: list) -> str:
@@ -355,6 +848,80 @@ def api_stats():
         "total_quota": summary.get("total_quota", 0),
         "active_accounts": summary.get("active", 0),
         "model_costs": get_all_costs(),
+    })
+
+
+@app.route("/api/request-logs", methods=["GET"])
+def api_request_logs():
+    db = get_db()
+    page_raw = request.args.get("page", "1")
+    page_size_raw = request.args.get("page_size", request.args.get("pageSize", "20"))
+    try:
+        page = int(str(page_raw or "1"))
+    except Exception:
+        page = 1
+    try:
+        page_size = int(str(page_size_raw or "20"))
+    except Exception:
+        page_size = 20
+    request_type = str(request.args.get("request_type", "") or "").strip()
+    model = str(request.args.get("model", "") or "").strip()
+    date_range = str(request.args.get("date_range", request.args.get("dateRange", "all")) or "").strip()
+    return jsonify(
+        db.get_request_logs(
+            page=page,
+            page_size=page_size,
+            request_type=request_type,
+            model=model,
+            date_range=date_range,
+        )
+    )
+
+
+@app.route("/api/model-plaza", methods=["GET"])
+def api_model_plaza():
+    """管理面板模型广场：聚合 Rita 模型目录 + docs/价格.md 积分价格。"""
+    force_refresh = str(request.args.get("refresh", "")).lower() in {"1", "true", "yes", "force"}
+    try:
+        catalog = _get_model_catalog(force_refresh=force_refresh)
+    except Exception as e:
+        log(f"⚠️ Failed to load model plaza catalog: {e}", "WARNING")
+        status = 500 if "no accounts configured" in str(e) else 502
+        return jsonify({"error": str(e)}), status
+
+    exact_prices, normalized_prices, price_meta = _load_price_doc_index()
+    categories: dict[str, int] = {}
+    models: list[dict] = []
+    priced_total = 0
+
+    for item in catalog.get("data", []):
+        category = str(item.get("category") or "未分类").strip() or "未分类"
+        categories[category] = categories.get(category, 0) + 1
+        name = str(item.get("name") or item.get("id") or "").strip()
+        points = _lookup_model_points(name, exact_prices, normalized_prices)
+        if points is not None:
+            priced_total += 1
+        models.append({
+            "id": item.get("id", ""),
+            "name": name,
+            "description": item.get("description", ""),
+            "category": category,
+            "tool": item.get("tool", ""),
+            "ability": item.get("ability", ""),
+            "upstream_quota": item.get("quota", 0),
+            "points": points,
+            "price_label": f"{points} 积分" if points is not None else "待补充",
+            "price_source": "docs/价格.md" if points is not None else "",
+        })
+
+    return jsonify({
+        "total": len(models),
+        "priced_total": priced_total,
+        "unpriced_total": max(len(models) - priced_total, 0),
+        "categories": [{"name": name, "count": count} for name, count in categories.items()],
+        "models": models,
+        "price_doc": price_meta,
+        "synced_at": _models_cache_ts,
     })
 
 # =========================================================================
@@ -671,6 +1238,11 @@ def api_list_account_emails():
 def api_mail_status():
     """Return mail service configuration status."""
     db = get_db()
+    moe_stats = auto_register.get_moemail_channel_stats({
+        "MOEMAIL_API_KEY": db.get_config("MOEMAIL_API_KEY"),
+        "MOEMAIL_API_BASE": db.get_config("MOEMAIL_API_BASE"),
+        "MOEMAIL_CHANNELS_JSON": db.get_config("MOEMAIL_CHANNELS_JSON", ""),
+    })
     return jsonify({
         "default_provider": db.get_config("MAIL_PROVIDER_DEFAULT", "gptmail") or "gptmail",
         "gptmail": {
@@ -682,8 +1254,12 @@ def api_mail_status():
             "api_base": db.get_config("YYDSMAIL_API_BASE", "https://maliapi.215.im/v1"),
         },
         "moemail": {
-            "configured": bool(db.get_config("MOEMAIL_API_KEY") and db.get_config("MOEMAIL_API_BASE")),
+            "configured": moe_stats["configured"],
             "api_base": db.get_config("MOEMAIL_API_BASE", ""),
+            "channels_total": moe_stats["total"],
+            "channels_enabled": moe_stats["enabled"],
+            "using_channels_json": moe_stats["using_json"],
+            "channels_parse_error": moe_stats["parse_error"],
         },
     })
 
@@ -717,8 +1293,7 @@ def api_get_ticket(account_id):
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
     """Return all config key-value pairs."""
-    db = get_db()
-    configs = db.get_all_config()
+    configs = _get_merged_config_rows()
     # Mask sensitive values for display
     for c in configs:
         key = c["key"].upper()
@@ -740,10 +1315,68 @@ def api_set_config():
     if not configs:
         return jsonify({"error": "configs dict is required"}), 400
     db = get_db()
+    existing_desc = {
+        str(item["key"] or "").strip(): str(item.get("description", "") or "")
+        for item in _get_merged_config_rows()
+    }
     for key, value in configs.items():
-        db.set_config(key, value)
+        key_text = str(key or "").strip()
+        value_text = "" if value is None else str(value)
+        db.set_config(key_text, value_text, existing_desc.get(key_text, ""))
+        _upsert_env_value(key_text, value_text)
     log(f"Config updated: {list(configs.keys())}", "INFO")
     return jsonify({"ok": True, "updated": list(configs.keys())})
+
+
+@app.route("/api/captcha/test", methods=["POST"])
+def api_test_captcha():
+    """测试当前验证码服务连通性。支持传入未保存的表单值。"""
+    data = request.json or {}
+    try:
+        result = auto_register.probe_recaptcha_provider(data)
+        level = "INFO" if result.get("ok") else "WARNING"
+        log(
+            f"Captcha connectivity test: provider={result.get('provider')} ok={result.get('ok')} error={result.get('error', '')}",
+            level,
+        )
+        return jsonify(result)
+    except Exception as e:
+        log(f"Captcha connectivity test crashed: {e}", "ERROR")
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "message": f"测试失败: {e}",
+        }), 500
+
+
+@app.route("/api/proxy/test", methods=["POST"])
+def api_test_proxy():
+    """测试 REGISTER_PROXY 是否可用，并返回 Cloudflare Trace 地区信息。"""
+    data = request.json or {}
+    try:
+        if "proxy" in data:
+            proxy = str(data.get("proxy") or "").strip()
+        elif "register_proxy" in data:
+            proxy = str(data.get("register_proxy") or "").strip()
+        else:
+            proxy = str(get_db().get_config("REGISTER_PROXY") or os.getenv("REGISTER_PROXY", "") or "").strip()
+        disable_ssl_verify = _parse_bool_value(
+            data.get("disable_ssl_verify"),
+            default=_parse_bool_value(get_db().get_config("DISABLE_SSL_VERIFY", os.getenv("DISABLE_SSL_VERIFY", "0"))),
+        )
+        result = _probe_register_proxy(proxy, disable_ssl_verify=disable_ssl_verify)
+        log(
+            f"Register proxy test: proxy={result.get('proxy') or '(empty)'} ok={result.get('ok')} loc={result.get('loc') or '-'} error={result.get('error') or ''}",
+            "INFO" if result.get("ok") else "WARNING",
+        )
+        return jsonify(result)
+    except Exception as e:
+        log(f"Register proxy test crashed: {e}", "ERROR")
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "message": f"代理测试失败: {e}",
+        }), 500
 
 
 # =========================================================================
@@ -752,13 +1385,113 @@ def api_set_config():
 @app.route("/api/auto-register/config", methods=["GET"])
 def api_auto_register_config():
     """Check auto-register configuration status."""
-    return jsonify(auto_register.check_config())
+    cfg = auto_register.check_config()
+    cfg["current_task"] = _get_manual_register_task()
+    return jsonify(cfg)
+
+
+@app.route("/api/auto-register/start", methods=["POST"])
+def api_auto_register_start():
+    """Start a manual register task and return immediately."""
+    data = request.json or {}
+    try:
+        count = min(max(int(data.get("count", 1) or 1), 1), 5)
+    except Exception:
+        count = 1
+    captcha_provider = str(data.get("captcha_provider") or "").strip()
+
+    config = auto_register.check_config(captcha_provider)
+    if not config["ready"]:
+        missing = list(config.get("mail_provider_missing") or [])
+        for item in config.get("captcha_missing") or []:
+            if item not in missing:
+                missing.insert(0, item)
+        return jsonify({
+            "error": f"Auto-register not configured. Missing: {', '.join(missing)}",
+            "config": config,
+        }), 400
+
+    task, err = _start_manual_register_task(count, config.get("captcha_provider") or captcha_provider)
+    if err == "busy":
+        return jsonify({
+            "error": "Manual register task already running",
+            "task": task,
+        }), 409
+    return jsonify({
+        "ok": True,
+        "task": task,
+        "config": config,
+    })
+
+
+@app.route("/api/auto-register/stop", methods=["POST"])
+def api_auto_register_stop():
+    data = request.json or {}
+    task_id = str(data.get("task_id") or "").strip()
+    task = _request_stop_manual_register(task_id or None)
+    if not task:
+        return jsonify({"error": "no matching manual register task"}), 404
+    return jsonify({"ok": True, "task": task})
+
+
+@app.route("/api/auto-register/stream", methods=["GET"])
+def api_auto_register_stream():
+    task_id = str(request.args.get("task_id") or "").strip()
+    if not task_id:
+        return jsonify({"error": "task_id is required"}), 400
+
+    def event_stream():
+        last_seq = 0
+        last_status = None
+        while True:
+            task = _get_manual_register_task(task_id, include_logs=True)
+            if not task:
+                payload = {"message": "task not found", "task_id": task_id}
+                yield f"event: error\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                break
+
+            if task["status"] != last_status:
+                state_payload = {k: v for k, v in task.items() if k != "logs"}
+                yield f"event: state\ndata: {json.dumps(state_payload, ensure_ascii=False)}\n\n"
+                last_status = task["status"]
+
+            logs = task.get("logs") or []
+            for item in logs:
+                if item["seq"] <= last_seq:
+                    continue
+                yield f"event: log\ndata: {json.dumps(item, ensure_ascii=False)}\n\n"
+                last_seq = item["seq"]
+
+            if task["status"] in {"completed", "failed", "stopped"}:
+                done_payload = {k: v for k, v in task.items() if k != "logs"}
+                yield f"event: done\ndata: {json.dumps(done_payload, ensure_ascii=False)}\n\n"
+                break
+
+            yield ": ping\n\n"
+            time.sleep(1)
+
+    return Response(
+        event_stream(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 @app.route("/api/auto-register", methods=["POST"])
 def api_auto_register():
     """Manually trigger registration of new account(s).
     Body: { "count": 1 }
     """
+    current_task = _get_manual_register_task()
+    if current_task and current_task["status"] in {"running", "stopping"}:
+        return jsonify({
+            "error": "Manual register task already running",
+            "task": current_task,
+        }), 409
+
     data = request.json or {}
     count = min(data.get("count", 1), 5)  # Max 5 at a time
     captcha_provider = str(data.get("captcha_provider") or "").strip()
@@ -819,46 +1552,12 @@ def health():
 # =========================================================================
 @app.route("/v1/models", methods=["GET"])
 def list_models():
-    global _models_cache, _models_cache_ts
-    now = time.time()
-    if _models_cache and now - _models_cache_ts < MODELS_CACHE_TTL:
-        return jsonify(_models_cache)
-
-    acc, _ = acm.next()
-    if not acc:
-        return jsonify({"error": "no accounts configured"}), 500
-
     try:
-        r = requests.post(
-            f"{UPSTREAM_URL}/aichat/categoryModels",
-            headers=acm.upstream_headers(acc, RITA_ORIGIN),
-            json={"language": "zh"}, timeout=15,
-            verify=not DISABLE_SSL_VERIFY,
-        )
-        r.raise_for_status()
-        upstream = r.json()
-        acm.mark_ok(acc)
-
-        data = []
-        for cat in upstream.get("data", {}).get("category_models", []):
-            cat_name = cat.get("name", "")
-            for m in cat.get("models", []):
-                mid = m.get("key", "")
-                data.append({
-                    "id": mid, "object": "model", "created": 0, "owned_by": "rita",
-                    "name": m.get("name", mid), "description": m.get("desc", ""),
-                    "quota": m.get("quota", 0), "tool": m.get("tool", ""),
-                    "ability": m.get("ability", ""), "category": cat_name,
-                })
-
-        result = {"object": "list", "data": data}
-        _models_cache, _models_cache_ts = result, now
-        return jsonify(result)
-
+        return jsonify(_get_model_catalog(force_refresh=False))
     except Exception as e:
         log(f"⚠️ Failed to fetch model catalog: {e}", "WARNING")
-        acm.mark_fail(acc, str(e))
-        return jsonify({"error": str(e)}), 502
+        status = 500 if "no accounts configured" in str(e) else 502
+        return jsonify({"error": str(e)}), status
 
 
 # =========================================================================
@@ -1011,517 +1710,24 @@ def get_title():
 # =========================================================================
 @app.route("/v1/chat/completions", methods=["POST"])
 def chat_completions():
-    data = request.json or {}
-    messages = data.get("messages", [])
-    model = data.get("model", "gpt-4o")
-    stream = data.get("stream", False)
-    client_tools = data.get("tools", [])
-
-    log(f"📥 /v1/chat/completions model={model} stream={stream} msgs={len(messages)} tools={len(client_tools)}", "INFO")
-    _increment_stats(model, messages)
-
-    if not messages:
-        return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error"}}), 400
-
-    # Get account (client header override or rotation)
-    client_token = request.headers.get("token", "")
-    client_visitorid = request.headers.get("visitorid", "")
-
-    acc, _ = acm.next()
-    if not acc and not client_token:
-        return jsonify({"error": {"message": "no accounts configured", "type": "config_error"}}), 500
-
-    try:
-        rita_model = resolve_rita_model(model)
-        chat_id, parent = get_or_create_conversation(messages)
-
-        rita_messages = build_rita_messages(messages)
-
-        if client_tools and rita_messages:
-            last_text = rita_messages[-1]["text"]
-            rita_messages[-1]["text"] = inject_tool_prompt(last_text, client_tools)
-            log(f"🔧 tool prompt injected ({len(client_tools)} tools)", "DEBUG")
-
-        # Build headers: prefer client-provided auth, otherwise use rotated account
-        if client_token:
-            hdrs = {
-                "Content-Type": "application/json",
-                "Origin": RITA_ORIGIN, "Referer": RITA_ORIGIN,
-                "token": client_token,
-                "Cookie": f"token={client_token}",
-            }
-            if client_visitorid:
-                hdrs["visitorid"] = client_visitorid
-        else:
-            hdrs = acm.upstream_headers(acc, RITA_ORIGIN)
-
-        # Auto-create conversation if needed (Rita requires valid chat_id)
-        if not chat_id:
-            try:
-                init_r = requests.post(
-                    f"{UPSTREAM_URL}/chatgpt/newConversation",
-                    headers=hdrs, json={"model": rita_model},
-                    timeout=15, verify=not DISABLE_SSL_VERIFY,
-                )
-                init_data = init_r.json()
-                if init_data.get("code") == 0:
-                    chat_id = init_data.get("data", {}).get("chat_id", 0)
-                    log(f"📝 Auto-created conversation: chat_id={chat_id}", "DEBUG")
-            except Exception as e:
-                log(f"⚠️ Failed to create conversation: {e}", "WARNING")
-
-        payload = {
-            "model": rita_model,
-            "messages": rita_messages,
-            "online": 0,
-            "model_type_id": 0,
-            "chat_id": chat_id,
-            "parent": parent,
-        }
-
-        resp = requests.post(
-            f"{UPSTREAM_URL}/aichat/completions",
-            headers=hdrs, json=payload, stream=True, timeout=120,
-            verify=not DISABLE_SSL_VERIFY,
-        )
-
-        if resp.status_code >= 500:
-            log(f"💥 Upstream 500: {resp.text[:200]}", "ERROR")
-            if acc:
-                acm.mark_fail(acc, f"HTTP {resp.status_code}")
-            return jsonify({"error": {"message": "upstream error", "type": "upstream_error"}}), 502
-
-        # Check if upstream returned a JSON error (not SSE)
-        ct = resp.headers.get("content-type", "")
-        if "application/json" in ct:
-            try:
-                err_body = resp.json()
-                err_code = err_body.get("code", 0)
-                if err_code and err_code != 0:
-                    err_msg = err_body.get("error", err_body.get("message", "upstream error"))
-                    log(f"⚠️ Upstream JSON error: code={err_code} msg={err_msg}", "WARNING")
-                    if acc:
-                        acm.mark_fail(acc, str(err_msg))
-                    return jsonify({"error": {"message": str(err_msg), "type": "upstream_error"}}), 502
-            except Exception:
-                pass
-
-        resp.raise_for_status()
-        if acc:
-            acm.mark_ok(acc)
-            # Deduct quota points based on model
-            cost = get_cost(rita_model)
-            acm.deduct_quota(acc.id, cost)
-            # Log usage to database
-            db = get_db()
-            msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
-            db.log_usage(acc.id, model, msg_chars // 4)
-
-        if stream:
-            def gen():
-                cid = f"chatcmpl-{int(time.time()*1000)}"
-                captured_msg_id = None
-
-                with resp:
-                    resp.encoding = "utf-8"
-                    for line in resp.iter_lines(decode_unicode=True):
-                        if not line or not line.startswith("data: "):
-                            continue
-                        raw = line[6:]
-                        if raw == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-
-                        etype = obj.get("type", "")
-                        if etype == "quota_remain":
-                            yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "choices": [{"index": 0, "delta": {}, "finish_reason": None}], "x_quota": {"quota_remain": obj.get("quota_remain"), "service_quota_remain": obj.get("service_quota_remain")}})}\n\n'
-                            continue
-                        if etype in ("assistant_complete", "conv_title"):
-                            if etype == "assistant_complete":
-                                break
-                            continue
-
-                        rid = obj.get("id", "")
-                        if not captured_msg_id and rid.startswith("ai"):
-                            captured_msg_id = rid
-
-                        choices = obj.get("choices", [])
-                        if not choices:
-                            continue
-                        delta = choices[0].get("delta", {})
-                        content = delta.get("content", "")
-                        if content:
-                            yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "created": obj.get("created", int(time.time())), "model": model, "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}, ensure_ascii=False)}\n\n'
-
-                    if captured_msg_id:
-                        update_conversation_state(messages, captured_msg_id, chat_id)
-
-                yield f'data: {json.dumps({"id": cid, "object": "chat.completion.chunk", "created": int(time.time()), "model": model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})}\n\n'
-                yield 'data: [DONE]\n\n'
-
-            return Response(gen(), mimetype="text/event-stream",
-                           headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-        else:
-            # Non-streaming: Rita always returns SSE, so we collect the full response
-            cid = f"chatcmpl-{int(time.time()*1000)}"
-            content_parts = []
-            captured_msg_id = None
-            created_ts = int(time.time())
-
-            with resp:
-                resp.encoding = "utf-8"
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line or not line.startswith("data: "):
-                        continue
-                    raw = line[6:]
-                    if raw == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-
-                    etype = obj.get("type", "")
-                    if etype in ("quota_remain", "conv_title"):
-                        continue
-                    if etype == "assistant_complete":
-                        break
-
-                    rid = obj.get("id", "")
-                    if not captured_msg_id and rid.startswith("ai"):
-                        captured_msg_id = rid
-
-                    created_ts = obj.get("created", created_ts)
-
-                    choices = obj.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        c = delta.get("content", "")
-                        if c:
-                            content_parts.append(c)
-
-            content = "".join(content_parts)
-            if captured_msg_id:
-                update_conversation_state(messages, captured_msg_id, chat_id)
-
-            if client_tools and content:
-                parsed = parse_tool_response(content)
-                if parsed["type"] == "tool_calls":
-                    log(f"🔧 tool_calls: {[c['name'] for c in parsed['calls']]}", "INFO")
-                    oai_tc = [{
-                        "id": f"call_{i}", "type": "function",
-                        "function": {"name": c["name"], "arguments": json.dumps(c["input"], ensure_ascii=False)},
-                    } for i, c in enumerate(parsed["calls"])]
-                    return jsonify({
-                        "id": cid, "object": "chat.completion",
-                        "created": created_ts, "model": model,
-                        "choices": [{"index": 0, "message": {"role": "assistant", "content": None, "tool_calls": oai_tc}, "finish_reason": "tool_calls"}],
-                        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-                    })
-                content = parsed.get("text", content)
-
-            return jsonify({
-                "id": cid, "object": "chat.completion",
-                "created": created_ts, "model": model,
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            })
-
-    except requests.RequestException as e:
-        log(f"❌ Request error: {e}", "ERROR")
-        if acc:
-            acm.mark_fail(acc, str(e))
-        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
-    except Exception as e:
-        log(f"❌ Unexpected error: {e}", "ERROR")
-        import traceback; traceback.print_exc()
-        return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
-
-
-# =========================================================================
-#  OpenAI Responses API  (/v1/responses)
-# =========================================================================
-def _responses_parse_input(data: dict) -> list[dict]:
-    """Convert Responses API input to OpenAI messages format.
-    Handles: string input, array of {role, content}, and typed items.
-    """
-    raw_input = data.get("input", "")
-    instructions = data.get("instructions", "")
-    messages = []
-
-    if instructions:
-        messages.append({"role": "system", "content": instructions})
-
-    if isinstance(raw_input, str):
-        messages.append({"role": "user", "content": raw_input})
-    elif isinstance(raw_input, list):
-        for item in raw_input:
-            if isinstance(item, str):
-                messages.append({"role": "user", "content": item})
-            elif isinstance(item, dict):
-                role = item.get("role", "user")
-                content = item.get("content", "")
-                item_type = item.get("type", "")
-                if item_type == "function_call_output":
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": item.get("call_id", ""),
-                        "content": item.get("output", ""),
-                    })
-                elif role in ("user", "assistant", "system", "developer"):
-                    if role == "developer":
-                        role = "system"
-                    # content can be string or array of parts
-                    if isinstance(content, list):
-                        text_parts = []
-                        for part in content:
-                            if isinstance(part, dict):
-                                if part.get("type") == "input_text":
-                                    text_parts.append(part.get("text", ""))
-                                elif part.get("type") == "text":
-                                    text_parts.append(part.get("text", ""))
-                            elif isinstance(part, str):
-                                text_parts.append(part)
-                        content = "".join(text_parts)
-                    messages.append({"role": role, "content": content})
-    return messages
-
-
-def _responses_make_base(resp_id: str, model: str, created: float,
-                         instructions=None, status="completed") -> dict:
-    """Build the base response object shared by events and final response."""
-    return {
-        "id": resp_id,
-        "object": "response",
-        "created_at": created,
-        "status": status,
-        "model": model,
-        "output": [],
-        "parallel_tool_calls": True,
-        "tool_choice": "auto",
-        "tools": [],
-        "temperature": 1.0,
-        "top_p": 1.0,
-        "max_output_tokens": None,
-        "truncation": "disabled",
-        "instructions": instructions,
-        "metadata": {},
-        "incomplete_details": None,
-        "error": None,
-        "usage": None,
-    }
+    return handle_chat_completions_api(request, _build_protocol_deps())
 
 
 @app.route("/v1/responses", methods=["POST"])
 def responses_api():
-    """OpenAI Responses API compatible endpoint.
-    Accepts: model, input (str or array), instructions, stream, etc.
-    Returns: Responses API format (non-streaming JSON or streaming SSE).
-    """
-    data = request.json or {}
-    model = data.get("model", "model_25")
-    stream = data.get("stream", False)
-    instructions = data.get("instructions")
+    return handle_responses_api(request, _build_protocol_deps())
 
-    # Convert input to messages
-    messages = _responses_parse_input(data)
-    if not messages:
-        return jsonify({"error": {"message": "input is required", "type": "invalid_request_error"}}), 400
 
-    log(f"📥 /v1/responses model={model} stream={stream} msgs={len(messages)}", "INFO")
-    _increment_stats(model, messages)
+@app.route("/v1/messages/count_tokens", methods=["POST"])
+@app.route("/v1/v1/messages/count_tokens", methods=["POST"])
+def anthropic_count_tokens():
+    return handle_anthropic_count_tokens(request, _build_protocol_deps())
 
-    acc, _ = acm.next()
-    if not acc:
-        return jsonify({"error": {"message": "no accounts configured", "type": "config_error"}}), 500
 
-    try:
-        rita_model = resolve_rita_model(model)
-        rita_messages = build_rita_messages(messages)
-        hdrs = acm.upstream_headers(acc, RITA_ORIGIN)
-
-        # Create conversation
-        chat_id = 0
-        try:
-            init_r = requests.post(
-                f"{UPSTREAM_URL}/chatgpt/newConversation",
-                headers=hdrs, json={"model": rita_model},
-                timeout=15, verify=not DISABLE_SSL_VERIFY,
-            )
-            init_data = init_r.json()
-            if init_data.get("code") == 0:
-                chat_id = init_data.get("data", {}).get("chat_id", 0)
-        except Exception:
-            pass
-
-        payload = {
-            "model": rita_model,
-            "messages": rita_messages,
-            "online": 0,
-            "model_type_id": 0,
-            "chat_id": chat_id,
-            "parent": "0",
-        }
-
-        resp = requests.post(
-            f"{UPSTREAM_URL}/aichat/completions",
-            headers=hdrs, json=payload, stream=True, timeout=120,
-            verify=not DISABLE_SSL_VERIFY,
-        )
-
-        # Check for JSON error
-        ct = resp.headers.get("content-type", "")
-        if "application/json" in ct:
-            try:
-                err = resp.json()
-                if err.get("code") and err["code"] != 0:
-                    acm.mark_fail(acc, str(err.get("error", err.get("message", ""))))
-                    return jsonify({"error": {"message": str(err.get("error", err.get("message", "upstream error"))), "type": "upstream_error"}}), 502
-            except Exception:
-                pass
-
-        acm.mark_ok(acc)
-        cost = get_cost(rita_model)
-        acm.deduct_quota(acc.id, cost)
-        db = get_db()
-        msg_chars = sum(len(str(m.get("content", ""))) for m in messages)
-        db.log_usage(acc.id, model, msg_chars // 4)
-
-        resp_id = f"resp_{int(time.time()*1000)}"
-        msg_id = f"msg_{int(time.time()*1000)}"
-        created = time.time()
-
-        if stream:
-            def gen_responses_stream():
-                seq = 0
-                full_text_parts = []
-                base = _responses_make_base(resp_id, model, created, instructions, "in_progress")
-
-                # Event 1: response.created
-                yield f"event: response.created\ndata: {json.dumps({'type':'response.created','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # Event 2: response.in_progress
-                yield f"event: response.in_progress\ndata: {json.dumps({'type':'response.in_progress','sequence_number':seq,'response':base}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # Event 3: output_item.added
-                item_skeleton = {"id": msg_id, "type": "message", "role": "assistant", "status": "in_progress", "content": []}
-                yield f"event: response.output_item.added\ndata: {json.dumps({'type':'response.output_item.added','sequence_number':seq,'output_index':0,'item':item_skeleton}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # Event 4: content_part.added
-                part_skeleton = {"type": "output_text", "text": "", "annotations": []}
-                yield f"event: response.content_part.added\ndata: {json.dumps({'type':'response.content_part.added','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'part':part_skeleton}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # Read SSE from upstream and emit text deltas
-                with resp:
-                    resp.encoding = "utf-8"
-                    for line in resp.iter_lines(decode_unicode=True):
-                        if not line or not line.startswith("data: "):
-                            continue
-                        raw = line[6:]
-                        if raw == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        etype = obj.get("type", "")
-                        if etype in ("quota_remain", "conv_title"):
-                            continue
-                        if etype == "assistant_complete":
-                            break
-                        choices = obj.get("choices", [])
-                        if choices:
-                            delta_content = choices[0].get("delta", {}).get("content", "")
-                            if delta_content:
-                                full_text_parts.append(delta_content)
-                                yield f"event: response.output_text.delta\ndata: {json.dumps({'type':'response.output_text.delta','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'delta':delta_content}, ensure_ascii=False)}\n\n"
-                                seq += 1
-
-                full_text = "".join(full_text_parts)
-
-                # output_text.done
-                yield f"event: response.output_text.done\ndata: {json.dumps({'type':'response.output_text.done','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'text':full_text}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # content_part.done
-                done_part = {"type": "output_text", "text": full_text, "annotations": []}
-                yield f"event: response.content_part.done\ndata: {json.dumps({'type':'response.content_part.done','sequence_number':seq,'item_id':msg_id,'output_index':0,'content_index':0,'part':done_part}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # output_item.done
-                done_item = {"id": msg_id, "type": "message", "role": "assistant", "status": "completed", "content": [done_part]}
-                yield f"event: response.output_item.done\ndata: {json.dumps({'type':'response.output_item.done','sequence_number':seq,'output_index':0,'item':done_item}, ensure_ascii=False)}\n\n"
-                seq += 1
-
-                # response.completed
-                usage = {"input_tokens": msg_chars // 4, "input_tokens_details": {"cached_tokens": 0}, "output_tokens": len(full_text) // 4, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": (msg_chars + len(full_text)) // 4}
-                final = _responses_make_base(resp_id, model, created, instructions, "completed")
-                final["output"] = [done_item]
-                final["usage"] = usage
-                yield f"event: response.completed\ndata: {json.dumps({'type':'response.completed','sequence_number':seq,'response':final}, ensure_ascii=False)}\n\n"
-
-            return Response(gen_responses_stream(), mimetype="text/event-stream",
-                           headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
-
-        else:
-            # Non-streaming: collect SSE content
-            content_parts = []
-            with resp:
-                resp.encoding = "utf-8"
-                for line in resp.iter_lines(decode_unicode=True):
-                    if not line or not line.startswith("data: "):
-                        continue
-                    raw = line[6:]
-                    if raw == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(raw)
-                    except json.JSONDecodeError:
-                        continue
-                    etype = obj.get("type", "")
-                    if etype in ("quota_remain", "conv_title"):
-                        continue
-                    if etype == "assistant_complete":
-                        break
-                    choices = obj.get("choices", [])
-                    if choices:
-                        c = choices[0].get("delta", {}).get("content", "")
-                        if c:
-                            content_parts.append(c)
-
-            full_text = "".join(content_parts)
-            output_item = {
-                "id": msg_id, "type": "message", "role": "assistant", "status": "completed",
-                "content": [{"type": "output_text", "text": full_text, "annotations": []}],
-            }
-            usage = {
-                "input_tokens": msg_chars // 4,
-                "input_tokens_details": {"cached_tokens": 0},
-                "output_tokens": len(full_text) // 4,
-                "output_tokens_details": {"reasoning_tokens": 0},
-                "total_tokens": (msg_chars + len(full_text)) // 4,
-            }
-            result = _responses_make_base(resp_id, model, created, instructions, "completed")
-            result["output"] = [output_item]
-            result["usage"] = usage
-            return jsonify(result)
-
-    except requests.RequestException as e:
-        log(f"❌ Responses API error: {e}", "ERROR")
-        if acc:
-            acm.mark_fail(acc, str(e))
-        return jsonify({"error": {"message": str(e), "type": "upstream_error"}}), 502
-    except Exception as e:
-        log(f"❌ Responses API unexpected error: {e}", "ERROR")
-        import traceback; traceback.print_exc()
-        return jsonify({"error": {"message": str(e), "type": "internal_error"}}), 500
+@app.route("/v1/messages", methods=["POST"])
+@app.route("/v1/v1/messages", methods=["POST"])
+def anthropic_messages_api():
+    return handle_anthropic_messages_api(request, _build_protocol_deps())
 
 
 # =========================================================================

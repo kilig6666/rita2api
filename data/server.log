@@ -1,0 +1,20 @@
+[Database] Initialized: /Users/lvzhentao/gitee-learn/2api/rita2api/data/rita.db
+[AccountManager] Loaded 10 accounts from SQLite
+
+============================================================
+🚀 rita2api starting
+📍 Port: 10089  Upstream: https://api_v2.rita.ai
+🔑 Accounts: 10 total, 10 active, 0 disabled
+🌐 WebUI: http://localhost:10089/
+============================================================
+
+[94m[23:24:48] Token health checker started (interval: 600s)[0m
+[94m[23:24:48] ⏸ Auto-register disabled (set AUTO_REGISTER_ENABLED=1 to enable)[0m
+ * Serving Flask app 'server'
+ * Debug mode: off
+[31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:10089
+ * Running on http://192.168.151.119:10089
+[33mPress CTRL+C to quit[0m
+127.0.0.1 - - [12/Apr/2026 23:24:50] "GET /health HTTP/1.1" 200 -

@@ -70,12 +70,53 @@ AUTO_REGISTER_PASSWORD = os.getenv("AUTO_REGISTER_PASSWORD", "@qazwsx123456")
 
 # ===================== Logging =====================
 _log_fn = None
+_thread_local = threading.local()
 
 def _log(msg, level="INFO"):
-    if _log_fn:
+    thread_log_fn = getattr(_thread_local, "log_fn", None)
+    if thread_log_fn:
+        thread_log_fn(msg, level)
+    elif _log_fn:
         _log_fn(msg, level)
     else:
         print(f"[AutoRegister] {msg}")
+
+
+def set_thread_log_fn(log_fn=None):
+    _thread_local.log_fn = log_fn
+
+
+class RegistrationStopped(Exception):
+    """手动注册被用户请求停止。"""
+
+    def __init__(self, message: str = "Registration stopped", results: list[dict] | None = None):
+        super().__init__(message)
+        self.results = list(results or [])
+
+
+def _should_stop(should_stop=None) -> bool:
+    if not should_stop:
+        return False
+    try:
+        return bool(should_stop())
+    except Exception:
+        return False
+
+
+def _ensure_not_stopped(should_stop=None, stage: str = ""):
+    if _should_stop(should_stop):
+        suffix = f" @ {stage}" if stage else ""
+        raise RegistrationStopped(f"Registration stopped by user{suffix}")
+
+
+def _sleep_with_stop(seconds: float, should_stop=None, chunk: float = 0.25):
+    deadline = time.time() + max(0.0, float(seconds or 0))
+    while True:
+        _ensure_not_stopped(should_stop, "sleep")
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return
+        time.sleep(min(chunk, remaining))
 
 
 def _normalize_proxy_value(value: str = "") -> str:
@@ -182,7 +223,7 @@ def _is_mail_provider_configured(mail_provider: str, cfg: dict | None = None) ->
     if provider == "yydsmail":
         return bool(live_cfg.get("YYDSMAIL_API_KEY"))
     if provider == "moemail":
-        return bool(live_cfg.get("MOEMAIL_API_KEY") and live_cfg.get("MOEMAIL_API_BASE"))
+        return get_moemail_channel_stats(live_cfg)["configured"]
     return False
 
 
@@ -197,11 +238,101 @@ def _get_mail_provider_missing_keys(mail_provider: str, cfg: dict | None = None)
         if not live_cfg.get("YYDSMAIL_API_KEY"):
             missing.append("YYDSMAIL_API_KEY")
     elif provider == "moemail":
-        if not live_cfg.get("MOEMAIL_API_KEY"):
-            missing.append("MOEMAIL_API_KEY")
-        if not live_cfg.get("MOEMAIL_API_BASE"):
-            missing.append("MOEMAIL_API_BASE")
+        moe_stats = get_moemail_channel_stats(live_cfg)
+        if moe_stats["configured"]:
+            return []
+        if str(live_cfg.get("MOEMAIL_CHANNELS_JSON") or "").strip():
+            missing.append("MOEMAIL_CHANNELS_JSON")
+        else:
+            if not live_cfg.get("MOEMAIL_API_KEY"):
+                missing.append("MOEMAIL_API_KEY")
+            if not live_cfg.get("MOEMAIL_API_BASE"):
+                missing.append("MOEMAIL_API_BASE")
     return missing
+
+
+_moemail_rr_lock = threading.Lock()
+_moemail_rr_cursor = 0
+
+
+def _parse_moemail_channels(cfg: dict | None = None) -> tuple[list[dict], str]:
+    live_cfg = cfg or _get_live_config()
+    raw = str(live_cfg.get("MOEMAIL_CHANNELS_JSON") or "").strip()
+    if not raw:
+        return [], ""
+    try:
+        loaded = json.loads(raw)
+    except Exception as e:
+        return [], str(e)
+    if not isinstance(loaded, list):
+        return [], "MOEMAIL_CHANNELS_JSON must be a JSON array"
+
+    channels = []
+    for idx, item in enumerate(loaded, start=1):
+        if not isinstance(item, dict):
+            continue
+        channels.append({
+            "id": str(item.get("id") or f"moemail-{idx}").strip() or f"moemail-{idx}",
+            "name": str(item.get("name") or f"MoeMail {idx}").strip() or f"MoeMail {idx}",
+            "enabled": bool(item.get("enabled", True)),
+            "api_key": str(item.get("api_key") or "").strip(),
+            "api_base": str(item.get("api_base") or "").strip().rstrip("/"),
+        })
+    return channels, ""
+
+
+def get_moemail_channel_stats(cfg: dict | None = None) -> dict:
+    live_cfg = cfg or _get_live_config()
+    channels, parse_error = _parse_moemail_channels(live_cfg)
+    if channels:
+        enabled_channels = [c for c in channels if c["enabled"] and c["api_key"] and c["api_base"]]
+        return {
+            "configured": bool(enabled_channels),
+            "using_json": True,
+            "total": len(channels),
+            "enabled": len(enabled_channels),
+            "parse_error": parse_error,
+        }
+
+    legacy_ready = bool(live_cfg.get("MOEMAIL_API_KEY") and live_cfg.get("MOEMAIL_API_BASE"))
+    return {
+        "configured": legacy_ready,
+        "using_json": False,
+        "total": 1 if legacy_ready else 0,
+        "enabled": 1 if legacy_ready else 0,
+        "parse_error": parse_error,
+    }
+
+
+def _get_legacy_moemail_channel(cfg: dict | None = None) -> dict | None:
+    live_cfg = cfg or _get_live_config()
+    api_key = str(live_cfg.get("MOEMAIL_API_KEY") or "").strip()
+    api_base = str(live_cfg.get("MOEMAIL_API_BASE") or "").strip().rstrip("/")
+    if not api_key or not api_base:
+        return None
+    return {
+        "id": "legacy-moemail",
+        "name": "Legacy MoeMail",
+        "enabled": True,
+        "api_key": api_key,
+        "api_base": api_base,
+    }
+
+
+def _get_moemail_channel_candidates(cfg: dict | None = None) -> list[dict]:
+    global _moemail_rr_cursor
+    live_cfg = cfg or _get_live_config()
+    channels, _ = _parse_moemail_channels(live_cfg)
+    eligible = [c for c in channels if c["enabled"] and c["api_key"] and c["api_base"]]
+    if eligible:
+        with _moemail_rr_lock:
+            start = _moemail_rr_cursor % len(eligible)
+            ordered = eligible[start:] + eligible[:start]
+            _moemail_rr_cursor = (_moemail_rr_cursor + 1) % len(eligible)
+        return ordered
+
+    legacy = _get_legacy_moemail_channel(live_cfg)
+    return [legacy] if legacy else []
 
 
 # ===================== Live Config (DB > env) =====================
@@ -222,6 +353,7 @@ def _get_live_config() -> dict:
             "YYDSMAIL_API_BASE": db.get_config("YYDSMAIL_API_BASE") or YYDSMAIL_API_BASE,
             "MOEMAIL_API_KEY": db.get_config("MOEMAIL_API_KEY") or MOEMAIL_API_KEY,
             "MOEMAIL_API_BASE": db.get_config("MOEMAIL_API_BASE") or MOEMAIL_API_BASE,
+            "MOEMAIL_CHANNELS_JSON": db.get_config("MOEMAIL_CHANNELS_JSON", ""),
             "REGISTER_PROXY": db.get_config("REGISTER_PROXY") or REGISTER_PROXY,
             "MAIL_USE_PROXY": db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY,
             "AUTO_REGISTER_ENABLED": db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED,
@@ -243,6 +375,7 @@ def _get_live_config() -> dict:
             "YYDSMAIL_API_BASE": YYDSMAIL_API_BASE,
             "MOEMAIL_API_KEY": MOEMAIL_API_KEY,
             "MOEMAIL_API_BASE": MOEMAIL_API_BASE,
+            "MOEMAIL_CHANNELS_JSON": os.getenv("MOEMAIL_CHANNELS_JSON", ""),
             "REGISTER_PROXY": REGISTER_PROXY,
             "MAIL_USE_PROXY": MAIL_USE_PROXY,
             "AUTO_REGISTER_ENABLED": AUTO_REGISTER_ENABLED,
@@ -356,20 +489,38 @@ def create_temp_email_by_provider(mail_provider: str = "") -> dict:
             "api_base": cfg["YYDSMAIL_API_BASE"],
         }
     if provider == "moemail":
-        email, auth_credential = _moemail_create_email()
-        payload = {
-            "api_key": cfg["MOEMAIL_API_KEY"],
-            "api_base": cfg["MOEMAIL_API_BASE"],
-            "auth_credential": auth_credential,
-        }
-        return {
-            "email": email,
-            "auth_credential": auth_credential,
-            "mail_provider": "moemail",
-            "mail_api_key": _serialize_mail_api_payload("moemail", payload),
-            "channel_label": "MoeMail",
-            "api_base": cfg["MOEMAIL_API_BASE"],
-        }
+        candidates = _get_moemail_channel_candidates(cfg)
+        if not candidates:
+            raise Exception("MoeMail create failed: no enabled channel configured")
+        last_error = None
+        for idx, channel in enumerate(candidates, start=1):
+            _log(
+                f"📮 MoeMail channel {channel['name']} create mailbox ({idx}/{len(candidates)})...",
+                "INFO",
+            )
+            try:
+                email, auth_credential = _moemail_create_email(channel["api_key"], channel["api_base"])
+                payload = {
+                    "api_key": channel["api_key"],
+                    "api_base": channel["api_base"],
+                    "auth_credential": auth_credential,
+                    "channel_id": channel["id"],
+                    "channel_name": channel["name"],
+                }
+                return {
+                    "email": email,
+                    "auth_credential": auth_credential,
+                    "mail_provider": "moemail",
+                    "mail_api_key": _serialize_mail_api_payload("moemail", payload),
+                    "channel_label": f"MoeMail/{channel['name']}",
+                    "api_base": channel["api_base"],
+                    "channel_id": channel["id"],
+                    "channel_name": channel["name"],
+                }
+            except Exception as e:
+                last_error = e
+                _log(f"⚠️ MoeMail channel {channel['name']} create failed: {e}", "WARNING")
+        raise Exception(f"MoeMail create failed across {len(candidates)} channel(s): {last_error}")
 
     resp = _http_post(
         f"{cfg['GPTMAIL_API_BASE']}/api/generate-email",
@@ -394,7 +545,7 @@ def create_temp_email_by_provider(mail_provider: str = "") -> dict:
     }
 
 
-def wait_for_verification_code(email: str, timeout: int = 120) -> str | None:
+def wait_for_verification_code(email: str, timeout: int = 120, should_stop=None) -> str | None:
     """Poll GPTMail for verification code.
     Optimized: extract from subject first (fast path), then from content/html.
     """
@@ -405,6 +556,7 @@ def wait_for_verification_code(email: str, timeout: int = 120) -> str | None:
 
     start = time.time()
     while time.time() - start < timeout:
+        _ensure_not_stopped(should_stop, "gptmail_poll")
         try:
             resp = _http_get(
                 f"{api_base}/api/emails",
@@ -444,7 +596,7 @@ def wait_for_verification_code(email: str, timeout: int = 120) -> str | None:
 
         elapsed = int(time.time() - start)
         _log(f"📧 Waiting for verification code... ({elapsed}s/{timeout}s)", "DEBUG")
-        time.sleep(OTP_POLL_INTERVAL)
+        _sleep_with_stop(OTP_POLL_INTERVAL, should_stop)
 
     return None
 
@@ -476,10 +628,10 @@ def _extract_code(content) -> str | None:
 
 # ===================== YesCaptcha — reCAPTCHA Enterprise Solver =====================
 
-# 任务类型优先级：Enterprise 优先，标准 V2 兜底
+# 任务类型优先级：优先恢复历史稳定链路，标准 V2 先跑，Enterprise 仅作兜底
 _RECAPTCHA_TASK_TYPES = [
-    "RecaptchaV2EnterpriseTaskProxyless",  # 企业版 (Rita.ai 实际使用)
-    "NoCaptchaTaskProxyless",              # 标准 V2 兜底
+    "NoCaptchaTaskProxyless",              # 历史稳定链路，优先尝试
+    "RecaptchaV2EnterpriseTaskProxyless",  # 企业版兜底
 ]
 
 
@@ -520,6 +672,117 @@ def _resolve_recaptcha_provider_config(cfg: dict | None = None, provider_overrid
         "api_url": api_url.rstrip("/"),
         "client_key": client_key,
     }
+
+
+def probe_recaptcha_provider(raw: dict | None = None) -> dict:
+    """测试当前打码服务连通性。支持传入未保存的表单值覆盖。"""
+    live_cfg = _get_live_config()
+    source = raw if isinstance(raw, dict) else {}
+    provider_override = str(source.get("provider") or source.get("captcha_provider") or "").strip()
+    cfg = {
+        **live_cfg,
+        "CAPTCHA_PROVIDER": provider_override or live_cfg.get("CAPTCHA_PROVIDER"),
+        "YESCAPTCHA_KEY": str(source.get("yescaptcha_key") or source.get("YESCAPTCHA_KEY") or live_cfg.get("YESCAPTCHA_KEY") or "").strip(),
+        "OHMYCAPTCHA_LOCAL_API_URL": str(
+            source.get("ohmycaptcha_local_api_url")
+            or source.get("OHMYCAPTCHA_LOCAL_API_URL")
+            or live_cfg.get("OHMYCAPTCHA_LOCAL_API_URL")
+            or ""
+        ).strip(),
+        "OHMYCAPTCHA_LOCAL_KEY": str(
+            source.get("ohmycaptcha_local_key")
+            or source.get("OHMYCAPTCHA_LOCAL_KEY")
+            or live_cfg.get("OHMYCAPTCHA_LOCAL_KEY")
+            or ""
+        ).strip(),
+        "REGISTER_PROXY": str(source.get("register_proxy") or source.get("REGISTER_PROXY") or live_cfg.get("REGISTER_PROXY") or "").strip(),
+        "DISABLE_SSL_VERIFY": (
+            str(source.get("disable_ssl_verify") or source.get("DISABLE_SSL_VERIFY") or "").strip().lower() in {"1", "true", "yes", "on"}
+            if source.get("disable_ssl_verify") is not None or source.get("DISABLE_SSL_VERIFY") is not None
+            else bool(live_cfg.get("DISABLE_SSL_VERIFY"))
+        ),
+    }
+    provider_cfg = _resolve_recaptcha_provider_config(cfg, provider_override)
+    provider = provider_cfg["provider"]
+    provider_label = provider_cfg["label"]
+    api_url = provider_cfg["api_url"]
+    client_key = provider_cfg["client_key"]
+    ssl_verify = not bool(cfg.get("DISABLE_SSL_VERIFY"))
+    register_proxy = "" if provider == "ohmycaptcha_local" else _resolve_register_proxy(cfg)
+
+    result = {
+        "ok": False,
+        "provider": provider,
+        "provider_label": provider_label,
+        "api_url": api_url,
+        "using_proxy": bool(register_proxy),
+        "proxy": register_proxy,
+        "health": None,
+        "balance": None,
+        "error": "",
+        "message": "",
+    }
+
+    if not api_url:
+        result["error"] = "API URL 未配置"
+        result["message"] = f"{provider_label} 测试失败：{result['error']}"
+        return result
+    if not client_key:
+        result["error"] = "client key 未配置"
+        result["message"] = f"{provider_label} 测试失败：{result['error']}"
+        return result
+
+    errors = []
+    health_ok = False
+    balance_ok = False
+
+    if provider == "ohmycaptcha_local":
+        try:
+            health_resp = _http_get(
+                f"{api_url}/api/v1/health",
+                timeout=10,
+                verify=ssl_verify,
+            )
+            health_ok = health_resp.ok
+            try:
+                result["health"] = health_resp.json()
+            except Exception:
+                result["health"] = {"status_code": health_resp.status_code, "text": health_resp.text[:300]}
+            if not health_ok:
+                errors.append(f"/api/v1/health 返回 {health_resp.status_code}")
+        except Exception as e:
+            errors.append(f"/api/v1/health 不可用: {e}")
+
+    try:
+        balance_resp = _http_post(
+            f"{api_url}/getBalance",
+            json={"clientKey": client_key},
+            timeout=15,
+            verify=ssl_verify,
+            proxy=register_proxy,
+        )
+        balance_resp.raise_for_status()
+        result["balance"] = balance_resp.json()
+        balance_ok = int((result["balance"] or {}).get("errorId") or 0) == 0
+        if not balance_ok:
+            errors.append(
+                str(
+                    (result["balance"] or {}).get("errorDescription")
+                    or (result["balance"] or {}).get("errorCode")
+                    or "getBalance 返回失败"
+                ).strip()
+            )
+    except Exception as e:
+        errors.append(f"/getBalance 失败: {e}")
+
+    result["ok"] = balance_ok and (health_ok or provider != "ohmycaptcha_local")
+    result["error"] = "; ".join(item for item in errors if item)
+    if result["ok"]:
+        extra = "，已通过 /api/v1/health 与 /getBalance" if provider == "ohmycaptcha_local" else "，已通过 /getBalance"
+        result["message"] = f"{provider_label} 连通正常{extra}"
+    else:
+        result["message"] = f"{provider_label} 测试失败：{result['error'] or 'unknown'}"
+    return result
 
 
 def _solve_one_type(provider_cfg: dict, task_type: str, ssl_verify: bool) -> str:
@@ -741,6 +1004,7 @@ def register_rita_account(
     mail_provider: str = "",
     mail_api_key: str = "",
     captcha_provider_override: str = "",
+    should_stop=None,
 ) -> dict:
     """
     Full registration flow for Rita.ai.
@@ -750,6 +1014,7 @@ def register_rita_account(
     Returns: {"token": "...", "email": "...", "ticket": "..."}
     Raises: Exception on failure
     """
+    _ensure_not_stopped(should_stop, "register_start")
     cfg = _get_live_config()
     register_proxy = _resolve_register_proxy(cfg)
     session, impersonate = _create_rita_session(
@@ -761,6 +1026,7 @@ def register_rita_account(
 
     def _post(path, payload):
         """POST helper that auto-updates session headers from response."""
+        _ensure_not_stopped(should_stop, path)
         kwargs = {"headers": headers, "json": payload, "timeout": 30}
         if impersonate:
             kwargs["impersonate"] = impersonate
@@ -785,7 +1051,7 @@ def register_rita_account(
     _log(f"   code={resp.get('code', '?')} need_captcha={resp.get('data', {}).get('need_captcha', 0)}", "DEBUG")
 
     # Human-like delay before captcha
-    time.sleep(random.uniform(2.0, 4.0))
+    _sleep_with_stop(random.uniform(2.0, 4.0), should_stop)
 
     # ---- Step 3: solve reCAPTCHA (with retry) ----
     captcha_token = None
@@ -793,7 +1059,7 @@ def register_rita_account(
         for cap_attempt in range(1, MAX_CAPTCHA_ATTEMPTS + 1):
             if cap_attempt > 1:
                 _log(f"   captcha submit failed, retrying ({cap_attempt}/{MAX_CAPTCHA_ATTEMPTS})...", "WARNING")
-                time.sleep(random.uniform(5.0, 8.0))
+                _sleep_with_stop(random.uniform(5.0, 8.0), should_stop)
 
             _log(f"Step 3/6: solving reCAPTCHA (attempt {cap_attempt})...", "INFO")
             try:
@@ -810,7 +1076,7 @@ def register_rita_account(
                 continue
 
             # Submit captcha with human-like delay
-            time.sleep(random.uniform(1.5, 3.5))
+            _sleep_with_stop(random.uniform(1.5, 3.5), should_stop)
             resp, _ = _post("/authorize/sign_process", {
                 "redirect_uri": redirect_uri, "language": "zh",
                 "email": email, "agree": 1,
@@ -828,7 +1094,7 @@ def register_rita_account(
     else:
         _log("Step 3/6: no captcha needed, skipped", "DEBUG")
 
-    time.sleep(random.uniform(0.5, 1.5))
+    _sleep_with_stop(random.uniform(0.5, 1.5), should_stop)
 
     # ---- Step 4: trigger emailCode (explicit send) ----
     _log("Step 4/6: emailCode (send OTP)...", "INFO")
@@ -842,7 +1108,7 @@ def register_rita_account(
     if ec_code != 0 and resp.get("type") != "success":
         _log("   emailCode returned non-success, but OTP may still have been sent", "WARNING")
 
-    time.sleep(random.uniform(1.0, 2.5))
+    _sleep_with_stop(random.uniform(1.0, 2.5), should_stop)
 
     # ---- Step 5: wait for OTP with resend support ----
     _log("Step 5/6: waiting for verification code...", "INFO")
@@ -856,13 +1122,14 @@ def register_rita_account(
                 "email": email, "redirect_uri": redirect_uri, "language": "zh",
             })
             _log(f"   resend code={resp.get('code', '?')}", "DEBUG")
-            time.sleep(random.uniform(2.0, 4.0))
+            _sleep_with_stop(random.uniform(2.0, 4.0), should_stop)
 
         otp_code = wait_for_code_by_provider(
             email,
             mail_provider=mail_provider,
             mail_api_key=mail_api_key,
             timeout=OTP_WAIT_TIMEOUT,
+            should_stop=should_stop,
         )
         if otp_code:
             _log(f"   Got OTP: {otp_code}", "DEBUG")
@@ -881,17 +1148,18 @@ def register_rita_account(
     # ---- OTP verification failure: resend and retry once ----
     if resp.get("code") != 0 and resp.get("type") != "success":
         _log(f"   OTP verification failed (code={resp.get('code')}), resending...", "WARNING")
-        time.sleep(random.uniform(3.0, 5.0))
+        _sleep_with_stop(random.uniform(3.0, 5.0), should_stop)
         _post("/authorize/emailCode", {
             "email": email, "redirect_uri": redirect_uri, "language": "zh",
         })
-        time.sleep(random.uniform(3.0, 5.0))
+        _sleep_with_stop(random.uniform(3.0, 5.0), should_stop)
 
         new_code = wait_for_code_by_provider(
             email,
             mail_provider=mail_provider,
             mail_api_key=mail_api_key,
             timeout=OTP_WAIT_TIMEOUT,
+            should_stop=should_stop,
         )
         if new_code and new_code != otp_code:
             _log(f"   New OTP: {new_code}, re-submitting...", "DEBUG")
@@ -939,6 +1207,7 @@ def register_rita_account(
     if ticket:
         _log("Step 7: activating account on api_v2 via ticket...", "DEBUG")
         try:
+            _ensure_not_stopped(should_stop, "activate_ticket")
             activate_resp = _http_get(
                 f"https://www.rita.ai/zh/ai-chat",
                 params={"ticket": ticket},
@@ -962,7 +1231,8 @@ def register_rita_account(
 
 
 # ===================== Orchestrator =====================
-def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_provider_override: str = "") -> dict | None:
+def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_provider_override: str = "",
+                      should_stop=None) -> dict | None:
     """
     Register one new Rita.ai account and optionally add it to AccountManager.
 
@@ -970,6 +1240,7 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
     """
     cfg = _get_live_config()
     try:
+        _ensure_not_stopped(should_stop, "auto_register_one_init")
         selected_provider = _get_default_mail_provider(cfg)
         captcha_cfg = _resolve_recaptcha_provider_config(cfg, captcha_provider_override)
         register_proxy = _resolve_register_proxy(cfg)
@@ -985,24 +1256,30 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
             _log("📧 邮箱请求按直连执行", "DEBUG")
 
         # 1. Create temp email
+        _ensure_not_stopped(should_stop, "create_temp_email")
         _log(f"🔄 Creating temporary email via {selected_provider}...", "INFO")
         mailbox = create_temp_email_by_provider(selected_provider)
         email = str(mailbox.get("email") or "").strip()
         _log(f"📧 Email: {email}", "INFO")
+        if mailbox.get("channel_label"):
+            _log(f"📨 Mail channel: {mailbox['channel_label']}", "INFO")
 
         # 2. Register
+        _ensure_not_stopped(should_stop, "register_account")
         _log("🔄 Starting registration...", "INFO")
         result = register_rita_account(
             email,
             mail_provider=selected_provider,
             mail_api_key=str(mailbox.get("mail_api_key") or "").strip(),
             captcha_provider_override=captcha_cfg["provider"],
+            should_stop=should_stop,
         )
         token = result["token"]
 
         # 3. Add to AccountManager
         account_id = None
         if account_manager:
+            _ensure_not_stopped(should_stop, "before_account_add")
             name_part = email.split("@")[0]
             acc = account_manager.add(
                 token=token, name=f"auto-{name_part}",
@@ -1014,7 +1291,7 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
             _log(f"➕ Account added: {acc.name} ({acc.id})", "SUCCESS")
 
             # Verify the new token works
-            if upstream_url and origin:
+            if upstream_url and origin and not _should_stop(should_stop):
                 test = account_manager.test_account(acc.id, upstream_url, origin)
                 if test.get("ok"):
                     _log(f"✅ Token verified: {test.get('models', 0)} models available", "SUCCESS")
@@ -1029,25 +1306,41 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
             "captcha_provider": captcha_cfg["provider"],
         }
 
+    except RegistrationStopped:
+        raise
     except Exception as e:
         _log(f"❌ Auto-register failed: {e}", "ERROR")
         return None
 
 
 def auto_register_batch(count: int = 1, account_manager=None,
-                        upstream_url="", origin="", captcha_provider_override: str = "") -> list[dict]:
+                        upstream_url="", origin="", captcha_provider_override: str = "",
+                        should_stop=None) -> list[dict]:
     """Register multiple accounts. Returns list of results."""
     results = []
     for i in range(count):
+        _ensure_not_stopped(should_stop, f"batch_before_{i+1}")
         _log(f"📋 Registering account {i+1}/{count}...", "INFO")
-        result = auto_register_one(account_manager, upstream_url, origin, captcha_provider_override)
+        try:
+            result = auto_register_one(
+                account_manager,
+                upstream_url,
+                origin,
+                captcha_provider_override,
+                should_stop=should_stop,
+            )
+        except RegistrationStopped as e:
+            raise RegistrationStopped(str(e), results=results) from e
         if result:
             results.append(result)
         # Delay between registrations
         if i < count - 1:
             delay = random.uniform(5, 15)
             _log(f"⏳ Waiting {delay:.0f}s before next registration...", "DEBUG")
-            time.sleep(delay)
+            try:
+                _sleep_with_stop(delay, should_stop)
+            except RegistrationStopped as e:
+                raise RegistrationStopped(str(e), results=results) from e
     return results
 
 
@@ -1135,6 +1428,7 @@ def check_config(captcha_provider_override: str = "") -> dict:
         yydsmail_base = db.get_config("YYDSMAIL_API_BASE") or YYDSMAIL_API_BASE
         moemail_key = db.get_config("MOEMAIL_API_KEY") or MOEMAIL_API_KEY
         moemail_base = db.get_config("MOEMAIL_API_BASE") or MOEMAIL_API_BASE
+        moemail_channels_json = db.get_config("MOEMAIL_CHANNELS_JSON", "")
         register_proxy = db.get_config("REGISTER_PROXY") or REGISTER_PROXY
         mail_use_proxy = db.get_config("MAIL_USE_PROXY", "0") == "1" or MAIL_USE_PROXY
         auto_enabled = db.get_config("AUTO_REGISTER_ENABLED", "0") == "1" or AUTO_REGISTER_ENABLED
@@ -1153,6 +1447,7 @@ def check_config(captcha_provider_override: str = "") -> dict:
         yydsmail_base = YYDSMAIL_API_BASE
         moemail_key = MOEMAIL_API_KEY
         moemail_base = MOEMAIL_API_BASE
+        moemail_channels_json = os.getenv("MOEMAIL_CHANNELS_JSON", "")
         register_proxy = REGISTER_PROXY
         mail_use_proxy = MAIL_USE_PROXY
         auto_enabled = AUTO_REGISTER_ENABLED
@@ -1176,7 +1471,11 @@ def check_config(captcha_provider_override: str = "") -> dict:
     provider_cfg = {
         "gptmail": {"GPTMAIL_API_KEY": gptmail_key, "GPTMAIL_API_BASE": gptmail_base},
         "yydsmail": {"YYDSMAIL_API_KEY": yydsmail_key, "YYDSMAIL_API_BASE": yydsmail_base},
-        "moemail": {"MOEMAIL_API_KEY": moemail_key, "MOEMAIL_API_BASE": moemail_base},
+        "moemail": {
+            "MOEMAIL_API_KEY": moemail_key,
+            "MOEMAIL_API_BASE": moemail_base,
+            "MOEMAIL_CHANNELS_JSON": moemail_channels_json,
+        },
     }
     provider_ready = _is_mail_provider_configured(provider, {
         **provider_cfg.get(provider, {}),
@@ -1186,6 +1485,7 @@ def check_config(captcha_provider_override: str = "") -> dict:
         "YYDSMAIL_API_BASE": yydsmail_base,
         "MOEMAIL_API_KEY": moemail_key,
         "MOEMAIL_API_BASE": moemail_base,
+        "MOEMAIL_CHANNELS_JSON": moemail_channels_json,
     })
     provider_missing = _get_mail_provider_missing_keys(provider, {
         "GPTMAIL_API_KEY": gptmail_key,
@@ -1194,6 +1494,12 @@ def check_config(captcha_provider_override: str = "") -> dict:
         "YYDSMAIL_API_BASE": yydsmail_base,
         "MOEMAIL_API_KEY": moemail_key,
         "MOEMAIL_API_BASE": moemail_base,
+        "MOEMAIL_CHANNELS_JSON": moemail_channels_json,
+    })
+    moemail_stats = get_moemail_channel_stats({
+        "MOEMAIL_API_KEY": moemail_key,
+        "MOEMAIL_API_BASE": moemail_base,
+        "MOEMAIL_CHANNELS_JSON": moemail_channels_json,
     })
 
     return {
@@ -1213,8 +1519,12 @@ def check_config(captcha_provider_override: str = "") -> dict:
         "gptmail_api_base": gptmail_base,
         "yydsmail_configured": bool(yydsmail_key),
         "yydsmail_api_base": yydsmail_base,
-        "moemail_configured": bool(moemail_key and moemail_base),
+        "moemail_configured": moemail_stats["configured"],
         "moemail_api_base": moemail_base,
+        "moemail_channels_total": moemail_stats["total"],
+        "moemail_channels_enabled": moemail_stats["enabled"],
+        "moemail_using_channels_json": moemail_stats["using_json"],
+        "moemail_channels_parse_error": moemail_stats["parse_error"],
         "register_proxy": _normalize_proxy_value(register_proxy),
         "register_proxy_configured": bool(_normalize_proxy_value(register_proxy)),
         "mail_use_proxy": bool(mail_use_proxy),
@@ -1290,7 +1600,8 @@ def _yydsmail_create_email(api_key: str = "") -> tuple[str, str]:
 
 def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
                             mail_token: str = "",
-                            timeout: int = 120) -> str | None:
+                            timeout: int = 120,
+                            should_stop=None) -> str | None:
     """Poll YYDS Mail for verification code.
     Uses the session token from _yydsmail_create_email (not the API key).
     Falls back to api_key as Bearer if no mail_token.
@@ -1310,6 +1621,7 @@ def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
 
     start = time.time()
     while time.time() - start < timeout:
+        _ensure_not_stopped(should_stop, "yydsmail_poll")
         try:
             resp = _http_get(
                 f"{api_base}/messages",
@@ -1352,12 +1664,12 @@ def _yydsmail_wait_for_code(email: str, mail_api_key: str = "",
 
         elapsed = int(time.time() - start)
         _log(f"📧 YYDS Mail waiting... ({elapsed}s/{timeout}s)", "DEBUG")
-        time.sleep(OTP_POLL_INTERVAL)
+        _sleep_with_stop(OTP_POLL_INTERVAL, should_stop)
 
     return None
 
 
-def _moemail_wait_for_code(email: str, mail_api_key: str = "", timeout: int = 120) -> str | None:
+def _moemail_wait_for_code(email: str, mail_api_key: str = "", timeout: int = 120, should_stop=None) -> str | None:
     cfg = _get_live_config()
     payload = _parse_mail_api_payload("moemail", mail_api_key, cfg)
     api_key = str(payload.get("api_key") or "").strip()
@@ -1373,9 +1685,11 @@ def _moemail_wait_for_code(email: str, mail_api_key: str = "", timeout: int = 12
     ssl_verify = not cfg["DISABLE_SSL_VERIFY"]
     mail_proxy = _resolve_mail_proxy(cfg)
     headers = _moemail_headers(api_key)
+    channel_name = str(payload.get("channel_name") or "MoeMail").strip() or "MoeMail"
     start = time.time()
     seen_ids = set()
     while time.time() - start < timeout:
+        _ensure_not_stopped(should_stop, "moemail_poll")
         try:
             resp = _http_get(
                 f"{api_base}/api/emails/{auth_credential}",
@@ -1409,28 +1723,29 @@ def _moemail_wait_for_code(email: str, mail_api_key: str = "", timeout: int = 12
                     if code:
                         return code
         except Exception as e:
-            _log(f"📧 MoeMail poll error: {e}", "DEBUG")
+            _log(f"📧 {channel_name} poll error: {e}", "DEBUG")
 
         elapsed = int(time.time() - start)
-        _log(f"📧 MoeMail waiting... ({elapsed}s/{timeout}s)", "DEBUG")
-        time.sleep(OTP_POLL_INTERVAL)
+        _log(f"📧 {channel_name} waiting... ({elapsed}s/{timeout}s)", "DEBUG")
+        _sleep_with_stop(OTP_POLL_INTERVAL, should_stop)
 
     return None
 
 
 def wait_for_code_by_provider(email: str, mail_provider: str = "",
                               mail_api_key: str = "",
-                              timeout: int = 120) -> str | None:
+                              timeout: int = 120,
+                              should_stop=None) -> str | None:
     """Wait for verification code using the appropriate mail provider."""
     provider = _normalize_mail_provider(mail_provider or _get_default_mail_provider())
 
     if provider == "yydsmail":
-        return _yydsmail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout)
+        return _yydsmail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout, should_stop=should_stop)
     if provider == "moemail":
-        return _moemail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout)
+        return _moemail_wait_for_code(email, mail_api_key=mail_api_key, timeout=timeout, should_stop=should_stop)
     else:
         # Default to GPTMail
-        return wait_for_verification_code(email, timeout)
+        return wait_for_verification_code(email, timeout, should_stop=should_stop)
 
 
 # ===================== Token Refresh (Re-login existing account) =====================

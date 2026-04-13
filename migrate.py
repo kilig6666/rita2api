@@ -57,6 +57,7 @@ def migrate():
         "RITA_UPSTREAM": os.getenv("RITA_UPSTREAM", ""),
         "RITA_ORIGIN": os.getenv("RITA_ORIGIN", ""),
         "AUTH_TOKEN": os.getenv("AUTH_TOKEN", ""),
+        "PROXY_API_KEY": os.getenv("PROXY_API_KEY", ""),
         "DISABLE_SSL_VERIFY": os.getenv("DISABLE_SSL_VERIFY", ""),
         "HEALTH_CHECK_INTERVAL": os.getenv("HEALTH_CHECK_INTERVAL", ""),
         "AUTO_REGISTER_ENABLED": os.getenv("AUTO_REGISTER_ENABLED", ""),
