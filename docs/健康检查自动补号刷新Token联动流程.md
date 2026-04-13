@@ -22,7 +22,7 @@
 
 本项目当前的运转闭环是：
 
-**注册模块负责造号并入池 → 聊天请求持续消费账号池 → 健康检查周期性淘汰失效号 → 自动补号在活跃账号不够时补新号 → 刷新 token / 手动 re-activate 负责把旧号拉回池子。**
+**注册模块负责造号并入池 → 聊天请求持续消费账号池 → 健康检查周期性淘汰失效号 → 自动补号在活跃账号数或总剩余点数不足时补新号 → 刷新 token / 手动 re-activate 负责把旧号拉回池子。**
 
 ---
 
@@ -53,7 +53,7 @@
 - `enabled=1`
 - 且 `failures < 3`
 
-自动补号就是按这个 `active` 数量来判断是否需要补号。
+自动补号会把这个 `active` 数量作为一个阈值来源；同时还会额外参考 `summary().total_quota`，也就是当前账号池总剩余点数。
 
 ---
 
@@ -82,6 +82,8 @@
 - 线程名：`token-health-checker`
 - 启动后先等待 30 秒
 - 然后按 `HEALTH_CHECK_INTERVAL` 周期执行
+- `HEALTH_CHECK_INTERVAL` 优先读 SQLite `config`，读不到再回退环境变量默认值
+- 每轮循环 sleep 前都会重新读取一次，所以改完通常无需重启
 
 ### 5.2 检查对象
 
@@ -212,10 +214,11 @@
 1. 先等待 60 秒
 2. 然后每隔固定间隔执行一次检查
 3. 每次循环重新读取数据库配置
+4. 每次循环都会重新计算 `active` / `total_quota` 与阈值的关系
 
 重新读取配置意味着：
 
-- 你在配置页改了 `AUTO_REGISTER_MIN_ACTIVE` / `AUTO_REGISTER_BATCH` 等值后
+- 你在配置页改了 `AUTO_REGISTER_MIN_ACTIVE` / `AUTO_REGISTER_MIN_QUOTA` / `AUTO_REGISTER_BATCH` 等值后
 - 不需要重启服务
 - 下一轮循环就会生效
 
@@ -224,27 +227,30 @@
 当前自动补号真正使用的是：
 
 - `AUTO_REGISTER_MIN_ACTIVE`
+- `AUTO_REGISTER_MIN_QUOTA`
 - `AUTO_REGISTER_BATCH`
 
 逻辑是：
 
 1. 读取 `summary().active`
-2. 如果 `active < AUTO_REGISTER_MIN_ACTIVE`
-3. 计算还缺多少个账号
-4. 本轮最多只补 `AUTO_REGISTER_BATCH` 个
+2. 读取 `summary().total_quota`
+3. 只要 `active < AUTO_REGISTER_MIN_ACTIVE` 或 `total_quota < AUTO_REGISTER_MIN_QUOTA`
+4. 就会触发补号
+5. 本轮最多只补 `AUTO_REGISTER_BATCH` 个
 
-### 7.4 当前一个容易误判的点
+`check_config()` 也会把这三个值一并返回给前端：
 
-数据库和前端里还有一个配置：
+- `min_active_accounts`
+- `min_total_quota`
+- `batch_size`
 
-- `AUTO_REGISTER_MIN_QUOTA`
-
-但当前代码里，自动补号线程并没有真正用它作为补号触发条件。
+### 7.4 当前真实语义
 
 也就是说，现在系统是：
 
 - **按活跃账号数补号**
-- **不是按总点数低了就补号**
+- **也按总剩余点数补号**
+- **单轮补号数量再受 `AUTO_REGISTER_BATCH` 限制**
 
 ---
 
@@ -367,6 +373,7 @@
 这会直接影响：
 
 - `summary().active` 增加
+- 若该账号本身还有剩余点数，`summary().total_quota` 也会同步抬升
 - 自动补号线程下一轮可能就不需要继续补号了
 
 所以 refresh token 不只是局部修复，也是自动补号系统的一个“减压阀”。

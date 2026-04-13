@@ -38,6 +38,7 @@
 
 - 想看 `/v1/chat/completions`、`/v1/responses` 怎么选号
 - 想看 round-robin、失败计数、扣点、conversation state
+- 想看 `/v1/*` 鉴权、Responses `previous_response_id`、tool / reasoning 分支
 - 想看新注册账号为什么不一定下一条就被打到
 
 ### 2.4 第四步：看运行期维护链
@@ -99,7 +100,7 @@
 - [注册整体流程](./注册整体流程.md)
   - 讲“怎么造号”。
 - [注册后聊天请求轮换流程](./注册后聊天请求轮换流程.md)
-  - 讲“怎么用号”。
+  - 讲“怎么用号”，也覆盖 `/v1/*` 鉴权、Responses 续接与 tool / reasoning 分支。
 - [健康检查、自动补号、刷新 Token 联动流程](./健康检查自动补号刷新Token联动流程.md)
   - 讲“怎么养号 / 修号 / 补号”。
 

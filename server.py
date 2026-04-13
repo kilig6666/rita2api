@@ -622,11 +622,11 @@ def _run_manual_register_task(task_id: str, count: int, threads: int, captcha_pr
     def task_log(message: str, level: str = "INFO"):
         _append_manual_register_log(task_id, message, level)
 
+    try:
         task_log(
             f"🚀 手动注册任务已启动，请求数量={count}，线程={threads}，打码={captcha_provider or 'yescaptcha'}",
             "INFO",
         )
-    try:
         auto_register.set_thread_log_fn(task_log)
         results = auto_register.auto_register_batch(
             count=count,

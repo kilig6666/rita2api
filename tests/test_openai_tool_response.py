@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest import mock
 
 from auto_register import _build_auto_replenish_plan
 from adapters.anthropic_protocol import parse_tool_calls_from_text
@@ -139,6 +140,52 @@ class AutoReplenishPlanTests(unittest.TestCase):
         self.assertTrue(plan["should_replenish"])
         self.assertEqual(plan["to_create"], 1)
         self.assertIn("total_quota 10 < min_quota 50", plan["reason_text"])
+
+
+class ManualRegisterTaskTests(unittest.TestCase):
+    def test_manual_register_task_logs_once_and_does_not_recurse(self):
+        import server
+
+        task_id = "manualtest123456"
+        original_task = server._manual_register_task
+        server._manual_register_task = {
+            "id": task_id,
+            "status": "running",
+            "requested": 1,
+            "threads": 1,
+            "captcha_provider": "yescaptcha",
+            "stop_requested": False,
+            "created_at": 0,
+            "updated_at": 0,
+            "seq": 0,
+            "logs": [],
+            "accounts": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "active_workers": 0,
+            "error": "",
+        }
+
+        def fake_batch(**_kwargs):
+            server.auto_register._log("trigger one log", "INFO")
+            return []
+
+        try:
+            with mock.patch.object(server.auto_register, "auto_register_batch", side_effect=fake_batch), \
+                 mock.patch.object(server, "log", return_value=None):
+                server._run_manual_register_task(task_id, 1, 1, "yescaptcha")
+
+            task = server._manual_register_task
+            self.assertEqual(task["status"], "completed")
+            self.assertEqual(task["error"], "")
+            messages = [item["message"] for item in task["logs"]]
+            self.assertEqual(
+                messages.count("🚀 手动注册任务已启动，请求数量=1，线程=1，打码=yescaptcha"),
+                1,
+            )
+            self.assertIn("trigger one log", messages)
+        finally:
+            server._manual_register_task = original_task
 
 
 if __name__ == "__main__":
