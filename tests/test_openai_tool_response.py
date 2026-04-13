@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 import accounts as accounts_module
+import auto_register
 from auto_register import _build_auto_replenish_plan
 from adapters.anthropic_protocol import parse_tool_calls_from_text
 from adapters.openai_protocol import parse_tool_response, split_embedded_thinking
@@ -201,6 +202,128 @@ class ManualRegisterTaskTests(unittest.TestCase):
             server._manual_register_task = original_task
 
 
+class RegisterProxyProbeTests(unittest.TestCase):
+    def test_probe_register_proxy_exit_parses_ip_and_region(self):
+        fake_session = mock.Mock()
+        fake_response = mock.Mock()
+        fake_response.text = "ip=1.2.3.4\nloc=US\ncolo=LAX\n"
+        fake_response.raise_for_status.return_value = None
+        fake_session.get.return_value = fake_response
+
+        with mock.patch.object(auto_register.requests, "Session", return_value=fake_session):
+            result = auto_register._probe_register_proxy_exit(
+                "http://user:pass@127.0.0.1:8080",
+                disable_ssl_verify=True,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["ip"], "1.2.3.4")
+        self.assertEqual(result["loc"], "US")
+        self.assertEqual(result["colo"], "LAX")
+        fake_session.close.assert_called_once()
+
+    def test_auto_register_one_logs_proxy_exit_before_registering(self):
+        logged = []
+
+        def fake_log(message, level="INFO"):
+            logged.append((level, message))
+
+        cfg = {
+            "MAIL_PROVIDER_DEFAULT": "gptmail",
+            "CAPTCHA_PROVIDER": "yescaptcha",
+            "REGISTER_PROXY": "http://user:pass@127.0.0.1:8080",
+            "MAIL_USE_PROXY": False,
+            "DISABLE_SSL_VERIFY": True,
+            "AUTO_REGISTER_PASSWORD": "@qazwsx123456",
+            "YESCAPTCHA_KEY": "dummy",
+            "OHMYCAPTCHA_LOCAL_API_URL": "http://127.0.0.1:8001",
+            "OHMYCAPTCHA_LOCAL_KEY": "",
+            "GPTMAIL_API_KEY": "test",
+            "GPTMAIL_API_BASE": "https://mail.example.com",
+            "YYDSMAIL_API_KEY": "",
+            "YYDSMAIL_API_BASE": "https://maliapi.215.im/v1",
+            "MOEMAIL_API_KEY": "",
+            "MOEMAIL_API_BASE": "",
+            "MOEMAIL_CHANNELS_JSON": "",
+        }
+
+        with mock.patch.object(auto_register, "_get_live_config", return_value=cfg), \
+             mock.patch.object(auto_register, "_probe_register_proxy_exit", return_value={
+                 "ok": True,
+                 "ip": "8.8.8.8",
+                 "loc": "US",
+                 "colo": "SJC",
+                 "proxy": cfg["REGISTER_PROXY"],
+                 "trace": {},
+                 "error": "",
+             }), \
+             mock.patch.object(auto_register, "create_temp_email_by_provider", return_value={
+                 "email": "foo@example.com",
+                 "mail_api_key": "mail-token",
+             }), \
+             mock.patch.object(auto_register, "register_rita_account", return_value={
+                 "token": "tok_123",
+                 "email": "foo@example.com",
+                 "ticket": "ticket_123",
+             }), \
+             mock.patch.object(auto_register, "_log", side_effect=fake_log):
+            result = auto_register.auto_register_one(account_manager=None)
+
+        self.assertEqual(result["email"], "foo@example.com")
+        messages = [item[1] for item in logged]
+        self.assertIn("🌐 当前注册代理: http://user:pass@127.0.0.1:8080", messages)
+        self.assertIn("🌍 本次代理出口: ip=8.8.8.8 loc=US colo=SJC", messages)
+
+
+class ManualRegisterProxyExitStateTests(unittest.TestCase):
+    def test_append_manual_register_log_updates_current_proxy_exit(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        original_task = server._manual_register_task
+        server._manual_register_task = {
+            "id": "proxytask123456",
+            "status": "running",
+            "requested": 1,
+            "threads": 1,
+            "captcha_provider": "yescaptcha",
+            "stop_requested": False,
+            "created_at": 0,
+            "updated_at": 0,
+            "seq": 0,
+            "logs": [],
+            "accounts": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "active_workers": 0,
+            "current_proxy_exit": None,
+            "error": "",
+        }
+
+        try:
+            with mock.patch.object(server, "log", return_value=None):
+                server._append_manual_register_log(
+                    "proxytask123456",
+                    "🌍 本次代理出口: ip=151.242.36.81 loc=JP colo=NRT",
+                    "INFO",
+                )
+
+            task = server._manual_register_task
+            self.assertEqual(
+                task["current_proxy_exit"],
+                {"ip": "151.242.36.81", "loc": "JP", "colo": "NRT"},
+            )
+            public = server._manual_register_public(task)
+            self.assertEqual(
+                public["current_proxy_exit"],
+                {"ip": "151.242.36.81", "loc": "JP", "colo": "NRT"},
+            )
+        finally:
+            server._manual_register_task = original_task
+
+
 class AccountReservationTests(unittest.TestCase):
     def setUp(self):
         self._tmpdir = tempfile.TemporaryDirectory()
@@ -256,6 +379,127 @@ class RitaDispatchQuotaMessageTests(unittest.TestCase):
         self.assertTrue(is_quota_exhausted_message("quota insufficient for this request"))
         self.assertTrue(is_quota_exhausted_message("当前积分不足，请稍后再试"))
         self.assertFalse(is_quota_exhausted_message("conversation does not exist"))
+
+
+class ImageGenerationOptionTests(unittest.TestCase):
+    def test_normalize_reference_images_accepts_string_and_list(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        self.assertEqual(
+            server._normalize_reference_images("data:image/png;base64,abc"),
+            ["data:image/png;base64,abc"],
+        )
+        self.assertEqual(
+            server._normalize_reference_images([
+                {"url": "data:image/png;base64,aaa"},
+                "data:image/png;base64,bbb",
+            ]),
+            ["data:image/png;base64,aaa", "data:image/png;base64,bbb"],
+        )
+
+    def test_select_image_size_options_prefers_explicit_ratio_resolution(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        model_detail = {
+            "name": "Nano-banana 2",
+            "ratio": ["1:1", "4:3", "16:9"],
+            "resolution": [
+                {"resolution": "1K"},
+                {"resolution": "2K"},
+                {"resolution": "4K"},
+            ],
+        }
+
+        ratio, resolution = server._select_image_size_options(
+            model_detail,
+            size="1024x1024",
+            ratio="4:3",
+            resolution="2k",
+            quality="high",
+        )
+        self.assertEqual((ratio, resolution), ("4:3", "2K"))
+
+        ratio, resolution = server._select_image_size_options(
+            model_detail,
+            ratio="4:3",
+            quality="high",
+        )
+        self.assertEqual((ratio, resolution), ("4:3", "4K"))
+
+    def test_api_image_model_options_returns_supported_choices(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        fake_account = mock.Mock(id="acc-image")
+        model_detail = {
+            "name": "Nano-banana 2",
+            "ratio": ["1:1", "4:3"],
+            "resolution": [
+                {"resolution": "1K"},
+                {"resolution": "2K"},
+            ],
+            "image_reference_flg": 1,
+        }
+
+        with mock.patch.object(server, "_get_auth_token", return_value="panel-token"), \
+             mock.patch.object(server.acm, "next", return_value=(fake_account, 0)), \
+             mock.patch.object(server.acm, "upstream_headers", return_value={"Authorization": "Bearer upstream"}), \
+             mock.patch.object(server.acm, "mark_ok"), \
+             mock.patch.object(server, "_resolve_image_model_metadata", return_value=("model_888", model_detail)):
+            client = server.app.test_client()
+            response = client.get("/api/image-model-options?auth=panel-token&model=model_888")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["model"], "model_888")
+        self.assertEqual(payload["ratio_options"], ["1:1", "4:3"])
+        self.assertEqual(payload["resolution_options"], ["1K", "2K"])
+        self.assertEqual(payload["default_ratio"], "1:1")
+        self.assertEqual(payload["default_resolution"], "1K")
+        self.assertEqual(payload["count_options"], [1, 2, 3, 4])
+        self.assertTrue(payload["reference_image_supported"])
+
+    def test_image_generations_route_forwards_ratio_resolution_count_and_image(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        with mock.patch.object(server, "_get_proxy_api_key", return_value="proxy-token"), \
+             mock.patch.object(
+                 server,
+                 "_generate_openai_image_result",
+                 return_value={"created": 1710000000, "data": [{"url": "https://img.example/test.png"}]},
+             ) as mocked_generate:
+            client = server.app.test_client()
+            response = client.post(
+                "/v1/images/generations?auth=proxy-token",
+                json={
+                    "model": "model_888",
+                    "prompt": "draw a banana",
+                    "ratio": "4:3",
+                    "resolution": "2K",
+                    "n": 3,
+                    "image": ["data:image/png;base64,abc"],
+                    "response_format": "url",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_generate.assert_called_once()
+        self.assertEqual(mocked_generate.call_args.args[:2], ("model_888", "draw a banana"))
+        self.assertEqual(mocked_generate.call_args.kwargs["ratio"], "4:3")
+        self.assertEqual(mocked_generate.call_args.kwargs["resolution"], "2K")
+        self.assertEqual(mocked_generate.call_args.kwargs["n"], 3)
+        self.assertEqual(mocked_generate.call_args.kwargs["image"], ["data:image/png;base64,abc"])
 
 
 if __name__ == "__main__":

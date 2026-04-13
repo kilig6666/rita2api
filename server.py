@@ -553,6 +553,7 @@ def _manual_register_public(task: dict | None, include_logs: bool = False) -> di
         "updated_at": task["updated_at"],
         "error": task.get("error") or "",
         "accounts": list(task.get("accounts") or []),
+        "current_proxy_exit": dict(task.get("current_proxy_exit") or {}) if task.get("current_proxy_exit") else None,
     }
     if include_logs:
         result["logs"] = [dict(item) for item in task.get("logs") or []]
@@ -584,9 +585,29 @@ def _append_manual_register_log(task_id: str, msg: str, level: str = "INFO"):
             "level": level_name,
             "message": text,
         })
+        proxy_exit = _parse_manual_register_proxy_exit(text)
+        if proxy_exit:
+            task["current_proxy_exit"] = proxy_exit
         if len(task["logs"]) > 1000:
             task["logs"] = task["logs"][-1000:]
     log(f"[manual-register:{task_id[:8]}] {text}", level_name)
+
+
+def _parse_manual_register_proxy_exit(message: str) -> dict | None:
+    text = str(message or "").strip()
+    if not text.startswith("🌍 本次代理出口:"):
+        return None
+    payload = text.split(":", 1)[1].strip()
+    result = {}
+    for part in payload.split():
+        if "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        key_text = str(key or "").strip()
+        value_text = str(value or "").strip()
+        if key_text in {"ip", "loc", "colo"} and value_text:
+            result[key_text] = value_text
+    return result or None
 
 
 def _append_manual_register_result(task_id: str, result: dict):
@@ -712,6 +733,7 @@ def _start_manual_register_task(count: int, threads: int, captcha_provider: str)
             "success_count": 0,
             "failed_count": 0,
             "active_workers": 0,
+            "current_proxy_exit": None,
             "error": "",
         }
     threading.Thread(
@@ -1064,18 +1086,93 @@ def _normalize_image_response_format(value: str | None, default: str = "b64_json
     raise ValueError("response_format 仅支持 b64_json 或 url")
 
 
-def _select_image_size_options(model_detail: dict, size: str | None = None, quality: str | None = None) -> tuple[str | None, str | None]:
+def _normalize_reference_images(value) -> list[str]:
+    if value in (None, "", []):
+        return []
+
+    def _extract_one(item) -> str | None:
+        if isinstance(item, str):
+            text = item.strip()
+            return text or None
+        if isinstance(item, dict):
+            for key in ("url", "image_url", "b64_json", "data"):
+                text = str(item.get(key) or "").strip()
+                if text:
+                    return text
+        return None
+
+    if isinstance(value, (list, tuple)):
+        images = [_extract_one(item) for item in value]
+        result = [item for item in images if item]
+    else:
+        single = _extract_one(value)
+        result = [single] if single else []
+
+    if not result:
+        raise ValueError("image 必须是非空字符串、对象或它们组成的数组")
+    return result
+
+
+def _match_supported_image_option(
+    options: list[str],
+    requested: str | None,
+    *,
+    option_name: str,
+    model_name: str,
+) -> str | None:
+    text = str(requested or "").strip()
+    if not text:
+        return None
+    if not options:
+        return text
+
+    lookup = {str(item).strip().lower(): str(item).strip() for item in options if str(item).strip()}
+    matched = lookup.get(text.lower())
+    if matched:
+        return matched
+
+    raise ValueError(f"模型 {model_name or ''} 不支持{option_name} {text}".strip())
+
+
+def _select_image_size_options(
+    model_detail: dict,
+    size: str | None = None,
+    quality: str | None = None,
+    ratio: str | None = None,
+    resolution: str | None = None,
+) -> tuple[str | None, str | None]:
     requested_size = str(size or "").strip().lower()
     requested_quality = str(quality or "").strip().lower()
+    requested_ratio = str(ratio or "").strip()
+    requested_resolution = str(resolution or "").strip()
     ratios = [str(item).strip() for item in (model_detail.get("ratio") or []) if str(item).strip()]
     resolutions = [
         str(item.get("resolution") or "").strip()
         for item in (model_detail.get("resolution") or [])
         if isinstance(item, dict) and str(item.get("resolution") or "").strip()
     ]
+    model_name = str(model_detail.get("name") or model_detail.get("model_name") or "").strip()
 
-    ratio = ratios[0] if ratios else None
-    resolution = resolutions[0] if resolutions else None
+    selected_ratio = ratios[0] if ratios else None
+    selected_resolution = resolutions[0] if resolutions else None
+
+    explicit_ratio = _match_supported_image_option(
+        ratios,
+        requested_ratio,
+        option_name="比例",
+        model_name=model_name,
+    )
+    explicit_resolution = _match_supported_image_option(
+        resolutions,
+        requested_resolution,
+        option_name="分辨率",
+        model_name=model_name,
+    )
+    if explicit_ratio:
+        selected_ratio = explicit_ratio
+    if explicit_resolution:
+        selected_resolution = explicit_resolution
+    explicit_options_provided = bool(explicit_ratio or explicit_resolution)
 
     size_ratio_map = {
         "1024x1024": "1:1",
@@ -1084,13 +1181,14 @@ def _select_image_size_options(model_detail: dict, size: str | None = None, qual
         "1024x1792": "9:16",
         "1792x1024": "16:9",
     }
-    if requested_size and requested_size not in {"auto", ""}:
+    size_applied = False
+    if requested_size and requested_size not in {"auto", ""} and not explicit_options_provided:
         mapped_ratio = size_ratio_map.get(requested_size)
         if not mapped_ratio:
             raise ValueError("size 暂仅支持 1024x1024、1024x1536、1536x1024、1024x1792、1792x1024 或 auto")
         if ratios and mapped_ratio not in ratios:
             raise ValueError(f"模型 {model_detail.get('name', '')} 不支持尺寸 {requested_size}")
-        ratio = mapped_ratio
+        selected_ratio = mapped_ratio
         try:
             width_text, height_text = requested_size.split("x", 1)
             max_edge = max(int(width_text), int(height_text))
@@ -1098,12 +1196,13 @@ def _select_image_size_options(model_detail: dict, size: str | None = None, qual
             max_edge = 1024
         preferred_resolution = "4K" if max_edge >= 3072 else "2K" if max_edge > 1024 else "1K"
         if resolutions:
-            resolution = preferred_resolution if preferred_resolution in resolutions else resolutions[0]
+            selected_resolution = preferred_resolution if preferred_resolution in resolutions else resolutions[0]
+        size_applied = True
 
-    if requested_quality == "high" and resolutions:
-        resolution = "4K" if "4K" in resolutions else resolutions[-1]
+    if requested_quality == "high" and resolutions and not size_applied and not explicit_resolution:
+        selected_resolution = "4K" if "4K" in resolutions else resolutions[-1]
 
-    return ratio, resolution
+    return selected_ratio, selected_resolution
 
 
 def _extract_rita_image_urls(response: requests.Response) -> list[str]:
@@ -1146,6 +1245,9 @@ def _generate_openai_image_result(
     prompt: str,
     *,
     size: str | None = None,
+    ratio: str | None = None,
+    resolution: str | None = None,
+    image=None,
     n: int = 1,
     response_format: str = "b64_json",
     quality: str | None = None,
@@ -1158,6 +1260,7 @@ def _generate_openai_image_result(
 
     normalized_count = _normalize_image_count(n)
     normalized_format = _normalize_image_response_format(response_format)
+    reference_images = _normalize_reference_images(image)
     excluded_ids = _get_cached_image_cooldown_ids()
     last_error: Exception | None = None
 
@@ -1183,7 +1286,13 @@ def _generate_openai_image_result(
 
         try:
             resolved_model, model_detail = _resolve_image_model_metadata(requested_model, lease.headers)
-            ratio, resolution = _select_image_size_options(model_detail, size=size, quality=quality)
+            selected_ratio, selected_resolution = _select_image_size_options(
+                model_detail,
+                size=size,
+                quality=quality,
+                ratio=ratio,
+                resolution=resolution,
+            )
             payload = {
                 "model_type_id": int(model_detail.get("model_type_id") or 0),
                 "model_type_name": str(model_detail.get("model_type_name") or "").strip(),
@@ -1195,10 +1304,12 @@ def _generate_openai_image_result(
                     "image_num": normalized_count,
                 },
             }
-            if ratio:
-                payload["generate"]["ratio"] = ratio
-            if resolution:
-                payload["generate"]["resolution"] = resolution
+            if selected_ratio:
+                payload["generate"]["ratio"] = selected_ratio
+            if selected_resolution:
+                payload["generate"]["resolution"] = selected_resolution
+            if reference_images:
+                payload["generate"]["image"] = list(reference_images)
 
             submit_result = _get_rita_gateway().submit_image_generation(lease.headers, payload)
             submit_code = int(submit_result.get("code", 0) or 0)
@@ -1499,6 +1610,51 @@ def api_model_plaza():
         "price_doc": price_meta,
         "synced_at": _models_cache_ts,
     })
+
+
+@app.route("/api/image-model-options", methods=["GET"])
+def api_image_model_options():
+    """返回指定生图模型支持的比例/分辨率，供聊天页动态渲染参数按钮。"""
+    model = str(request.args.get("model") or "").strip()
+    if not model:
+        return jsonify({"error": "model is required"}), 400
+
+    acc, _ = acm.next()
+    if not acc:
+        return jsonify({"error": "no accounts configured"}), 500
+
+    try:
+        headers = acm.upstream_headers(acc, _get_runtime_origin())
+        resolved_model, model_detail = _resolve_image_model_metadata(model, headers)
+        ratio_options = [str(item).strip() for item in (model_detail.get("ratio") or []) if str(item).strip()]
+        resolution_options = [
+            str(item.get("resolution") or "").strip()
+            for item in (model_detail.get("resolution") or [])
+            if isinstance(item, dict) and str(item.get("resolution") or "").strip()
+        ]
+        default_ratio, default_resolution = _select_image_size_options(model_detail)
+        acm.mark_ok(acc)
+        return jsonify({
+            "model": resolved_model,
+            "name": str(model_detail.get("name") or resolved_model).strip(),
+            "ratio_options": ratio_options,
+            "resolution_options": resolution_options,
+            "default_ratio": default_ratio,
+            "default_resolution": default_resolution,
+            "count_options": [1, 2, 3, 4],
+            "default_count": 1,
+            "reference_image_supported": bool(model_detail.get("image_reference_flg")),
+        })
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except requests.RequestException as e:
+        acm.mark_fail(acc, str(e))
+        return jsonify({"error": str(e)}), 502
+    except Exception as e:
+        acm.mark_fail(acc, str(e))
+        log(f"⚠️ Failed to load image model options: {e}", "WARNING")
+        status = 500 if "no accounts configured" in str(e) else 502
+        return jsonify({"error": str(e)}), status
 
 
 def _normalize_email_key(email: str) -> str:
@@ -2376,6 +2532,9 @@ def image_generations():
             model,
             prompt,
             size=body.get("size"),
+            ratio=body.get("ratio"),
+            resolution=body.get("resolution"),
+            image=body.get("image", body.get("reference_image")),
             n=body.get("n", 1),
             response_format=body.get("response_format", "b64_json"),
             quality=body.get("quality"),

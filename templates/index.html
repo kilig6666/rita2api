@@ -192,6 +192,19 @@ tr:hover { background: rgba(99,102,241,.04); }
 .chat-image-link img { display: block; width: 100%; height: auto; }
 .chat-model-tip { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; color: var(--text2); }
 .chat-model-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 9999px; border: 1px solid var(--border); background: rgba(99,102,241,.08); color: var(--accent); font-size: 11px; }
+.chat-image-controls { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: rgba(99,102,241,.05); }
+.chat-image-hint { font-size: 11px; color: var(--text2); line-height: 1.6; }
+.chat-option-group { display: flex; flex-direction: column; gap: 8px; }
+.chat-option-label { font-size: 12px; color: var(--text2); }
+.chat-option-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.chat-option-btn { padding: 6px 12px; border: 1px solid var(--border); border-radius: 9999px; background: var(--card); color: var(--text); font-size: 12px; cursor: pointer; transition: all .15s; }
+.chat-option-btn:hover { border-color: var(--accent); color: var(--accent); }
+.chat-option-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chat-option-empty { font-size: 11px; color: var(--text2); }
+.chat-upload-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chat-upload-btn { padding: 7px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); font-size: 12px; cursor: pointer; transition: all .15s; }
+.chat-upload-btn:hover { border-color: var(--accent); color: var(--accent); }
+.chat-upload-name { font-size: 11px; color: var(--text2); max-width: 100%; word-break: break-all; }
 .chat-input-area { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: flex-end; }
 .chat-input { flex: 1; padding: 10px 14px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; resize: none; min-height: 42px; max-height: 120px; font-family: inherit; }
 .chat-input:focus { outline: none; border-color: var(--accent); }
@@ -410,6 +423,31 @@ th .row-cb { margin: 0; }
         <select class="model-select" id="chatModel" onchange="onModelChange()">
           <option value="">加载中...</option>
         </select>
+        <div class="chat-image-controls" id="chatImageControls" style="display:none">
+          <h3>生图参数</h3>
+          <div class="chat-image-hint" id="chatImageHint">正在加载当前模型支持的参数...</div>
+          <div class="chat-option-group">
+            <div class="chat-option-label">比例</div>
+            <div class="chat-option-list" id="chatRatioOptions"></div>
+          </div>
+          <div class="chat-option-group">
+            <div class="chat-option-label">分辨率</div>
+            <div class="chat-option-list" id="chatResolutionOptions"></div>
+          </div>
+          <div class="chat-option-group">
+            <div class="chat-option-label">生成数量</div>
+            <div class="chat-option-list" id="chatCountOptions"></div>
+          </div>
+          <div class="chat-option-group" id="chatReferenceGroup">
+            <div class="chat-option-label">参考图上传（单张）</div>
+            <div class="chat-upload-row">
+              <input type="file" id="chatReferenceInput" accept="image/*" style="display:none" onchange="onChatReferenceFileChange(event)">
+              <button type="button" class="chat-upload-btn" onclick="triggerChatReferenceUpload()">上传参考图</button>
+              <button type="button" class="chat-upload-btn" id="chatReferenceClearBtn" style="display:none" onclick="clearChatReferenceImage()">移除参考图</button>
+            </div>
+            <div class="chat-upload-name" id="chatReferenceName">未选择参考图</div>
+          </div>
+        </div>
         <h3 style="margin-top:8px">快捷操作</h3>
         <button class="btn btn-outline btn-sm" onclick="clearChat()">🗑 清空对话</button>
         <div style="margin-top:auto; padding-top:12px; border-top:1px solid var(--border)">
@@ -483,7 +521,10 @@ th .row-cb { margin: 0; }
     <div class="section-header">
       <h2>📋 <span>注册日志</span></h2>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span id="regTaskStatus" style="font-size:12px;color:var(--text2)">空闲</span>
+        <div style="display:flex;flex-direction:column;gap:2px">
+          <span id="regTaskStatus" style="font-size:12px;color:var(--text2)">空闲</span>
+          <span id="regProxyExitStatus" style="font-size:12px;color:var(--text2);display:none">最近一次代理出口：-</span>
+        </div>
         <button class="btn btn-outline btn-sm" onclick="clearRegLog()">清空日志</button>
       </div>
     </div>
@@ -974,6 +1015,7 @@ async function loadAllData() {
 let _accounts = [];
 let _models = [];
 let _chatConversation = [];
+let _imageModelOptionsCache = {};
 let _selectedIds = new Set();  // batch selection
 const REMOTE_SYNC_BASE_URL_KEY = 'rita_remote_sync_base_url';
 let _modelPlazaData = { models: [], categories: [], price_doc: {} };
@@ -986,6 +1028,20 @@ let _accountPager = {
   totalPages: 1,
 };
 let _selectedChatModel = '';
+let _chatImageOptions = {
+  model: '',
+  loading: false,
+  ratioOptions: [],
+  resolutionOptions: [],
+  countOptions: [1],
+  selectedRatio: '',
+  selectedResolution: '',
+  selectedCount: 1,
+  referenceSupported: false,
+  referenceImageDataUrl: '',
+  referenceImageName: '',
+  hint: '',
+};
 const _chatConversationLimit = 24;
 let _modelPlazaSearchTimer = null;
 let _requestLog = {
@@ -1459,20 +1515,21 @@ async function loadModels() {
       const nextValue = _models.some(m => m.id === previousValue) ? previousValue : _models[0].id;
       sel.value = nextValue;
       _selectedChatModel = nextValue;
-      onModelChange();
+      await onModelChange();
     } else {
       _selectedChatModel = '';
       sel.innerHTML = '<option value="">无模型可用</option>';
-      onModelChange();
+      await onModelChange();
     }
   } catch(e) {
     _selectedChatModel = '';
     document.getElementById('chatModel').innerHTML = '<option value="">加载失败</option>';
     document.getElementById('curModelName').textContent = '-';
+    renderChatImageControls();
   }
 }
 
-function onModelChange() {
+async function onModelChange() {
   const sel = document.getElementById('chatModel');
   _selectedChatModel = sel?.value || '';
   const m = _models.find(x => x.id === sel.value);
@@ -1488,6 +1545,25 @@ function onModelChange() {
     status.textContent = '就绪';
     status.style.color = 'var(--green)';
   }
+  if (m && String(m.ability || '').toLowerCase() === 'image') {
+    await ensureImageModelOptions(sel.value);
+  } else {
+    _chatImageOptions = {
+      model: '',
+      loading: false,
+      ratioOptions: [],
+      resolutionOptions: [],
+      countOptions: [1],
+      selectedRatio: '',
+      selectedResolution: '',
+      selectedCount: 1,
+      referenceSupported: false,
+      referenceImageDataUrl: '',
+      referenceImageName: '',
+      hint: '',
+    };
+    renderChatImageControls();
+  }
 }
 
 function getChatModelMeta(modelId) {
@@ -1497,6 +1573,219 @@ function getChatModelMeta(modelId) {
 function isImageModel(modelId) {
   const model = getChatModelMeta(modelId);
   return !!model && String(model.ability || '').toLowerCase() === 'image';
+}
+
+function renderChatOptionButtons(options, selectedValue, clickHandlerName, emptyText) {
+  if (!Array.isArray(options) || !options.length) {
+    return `<span class="chat-option-empty">${esc(emptyText || '当前模型未返回可选项')}</span>`;
+  }
+  const selectedText = String(selectedValue || '');
+  return options.map(value => `
+    <button
+      type="button"
+      class="chat-option-btn ${selectedText === String(value || '') ? 'active' : ''}"
+      onclick='${clickHandlerName}(${JSON.stringify(String(value || ""))})'
+    >${esc(value)}</button>
+  `).join('');
+}
+
+function renderChatImageControls() {
+  const wrap = document.getElementById('chatImageControls');
+  const hint = document.getElementById('chatImageHint');
+  const ratioWrap = document.getElementById('chatRatioOptions');
+  const resolutionWrap = document.getElementById('chatResolutionOptions');
+  const countWrap = document.getElementById('chatCountOptions');
+  const refGroup = document.getElementById('chatReferenceGroup');
+  const refName = document.getElementById('chatReferenceName');
+  const refClearBtn = document.getElementById('chatReferenceClearBtn');
+  const refInput = document.getElementById('chatReferenceInput');
+  if (!wrap || !hint || !ratioWrap || !resolutionWrap || !countWrap || !refGroup || !refName || !refClearBtn || !refInput) return;
+
+  if (!isImageModel(_selectedChatModel)) {
+    wrap.style.display = 'none';
+    hint.textContent = '';
+    ratioWrap.innerHTML = '';
+    resolutionWrap.innerHTML = '';
+    countWrap.innerHTML = '';
+    refName.textContent = '未选择参考图';
+    refClearBtn.style.display = 'none';
+    refGroup.style.display = 'none';
+    refInput.value = '';
+    return;
+  }
+
+  wrap.style.display = 'flex';
+  if (_chatImageOptions.loading) {
+    hint.textContent = '正在加载当前模型支持的比例与分辨率...';
+    ratioWrap.innerHTML = '<span class="chat-option-empty">加载中...</span>';
+    resolutionWrap.innerHTML = '<span class="chat-option-empty">加载中...</span>';
+    countWrap.innerHTML = '<span class="chat-option-empty">加载中...</span>';
+    refName.textContent = '正在加载当前模型能力...';
+    refClearBtn.style.display = 'none';
+    refGroup.style.display = 'flex';
+    return;
+  }
+
+  const ratioCount = _chatImageOptions.ratioOptions.length;
+  const resolutionCount = _chatImageOptions.resolutionOptions.length;
+  hint.textContent = _chatImageOptions.hint || `当前模型支持 ${ratioCount} 种比例 / ${resolutionCount} 档分辨率`;
+  ratioWrap.innerHTML = renderChatOptionButtons(
+    _chatImageOptions.ratioOptions,
+    _chatImageOptions.selectedRatio,
+    'selectChatImageRatio',
+    '当前模型未返回比例选项',
+  );
+  resolutionWrap.innerHTML = renderChatOptionButtons(
+    _chatImageOptions.resolutionOptions,
+    _chatImageOptions.selectedResolution,
+    'selectChatImageResolution',
+    '当前模型未返回分辨率选项',
+  );
+  countWrap.innerHTML = renderChatOptionButtons(
+    _chatImageOptions.countOptions,
+    String(_chatImageOptions.selectedCount || 1),
+    'selectChatImageCount',
+    '当前模型未返回数量选项',
+  );
+  refGroup.style.display = _chatImageOptions.referenceSupported ? 'flex' : 'none';
+  refName.textContent = _chatImageOptions.referenceImageName || (_chatImageOptions.referenceSupported ? '未选择参考图' : '当前模型不支持参考图');
+  refClearBtn.style.display = _chatImageOptions.referenceImageDataUrl ? 'inline-flex' : 'none';
+}
+
+function selectChatImageRatio(value) {
+  _chatImageOptions.selectedRatio = String(value || '').trim();
+  renderChatImageControls();
+}
+
+function selectChatImageResolution(value) {
+  _chatImageOptions.selectedResolution = String(value || '').trim();
+  renderChatImageControls();
+}
+
+function selectChatImageCount(value) {
+  const next = Number.parseInt(String(value || '1'), 10);
+  _chatImageOptions.selectedCount = Number.isFinite(next) ? Math.min(Math.max(next, 1), 4) : 1;
+  renderChatImageControls();
+}
+
+function triggerChatReferenceUpload() {
+  const input = document.getElementById('chatReferenceInput');
+  if (!input || !_chatImageOptions.referenceSupported) return;
+  input.click();
+}
+
+function clearChatReferenceImage() {
+  _chatImageOptions.referenceImageDataUrl = '';
+  _chatImageOptions.referenceImageName = '';
+  const input = document.getElementById('chatReferenceInput');
+  if (input) input.value = '';
+  renderChatImageControls();
+}
+
+function onChatReferenceFileChange(event) {
+  const file = event?.target?.files?.[0];
+  if (!file) return;
+  if (!String(file.type || '').startsWith('image/')) {
+    toast('请上传图片文件', 'error');
+    clearChatReferenceImage();
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    _chatImageOptions.referenceImageDataUrl = String(reader.result || '');
+    _chatImageOptions.referenceImageName = file.name || '参考图';
+    renderChatImageControls();
+  };
+  reader.onerror = () => {
+    toast('参考图读取失败', 'error');
+    clearChatReferenceImage();
+  };
+  reader.readAsDataURL(file);
+}
+
+async function ensureImageModelOptions(modelId, force = false) {
+  const modelKey = String(modelId || '').trim();
+  if (!modelKey || !isImageModel(modelKey)) {
+    _chatImageOptions = {
+      model: '',
+      loading: false,
+      ratioOptions: [],
+      resolutionOptions: [],
+      countOptions: [1],
+      selectedRatio: '',
+      selectedResolution: '',
+      selectedCount: 1,
+      referenceSupported: false,
+      referenceImageDataUrl: '',
+      referenceImageName: '',
+      hint: '',
+    };
+    renderChatImageControls();
+    return;
+  }
+
+  if (!force && _imageModelOptionsCache[modelKey]) {
+    _chatImageOptions = { ..._imageModelOptionsCache[modelKey] };
+    renderChatImageControls();
+    return;
+  }
+
+  _chatImageOptions = {
+    model: modelKey,
+    loading: true,
+    ratioOptions: [],
+    resolutionOptions: [],
+    countOptions: [1],
+    selectedRatio: '',
+    selectedResolution: '',
+    selectedCount: 1,
+    referenceSupported: false,
+    referenceImageDataUrl: '',
+    referenceImageName: '',
+    hint: '',
+  };
+  renderChatImageControls();
+
+  try {
+    const res = await api('GET', `/api/image-model-options?model=${encodeURIComponent(modelKey)}`);
+    if (_selectedChatModel !== modelKey) return;
+    const ratioOptions = Array.isArray(res.ratio_options) ? res.ratio_options.map(item => String(item || '').trim()).filter(Boolean) : [];
+    const resolutionOptions = Array.isArray(res.resolution_options) ? res.resolution_options.map(item => String(item || '').trim()).filter(Boolean) : [];
+    const countOptions = Array.isArray(res.count_options) ? res.count_options.map(item => Number.parseInt(String(item || '1'), 10)).filter(item => Number.isFinite(item) && item >= 1 && item <= 4) : [1];
+    const nextState = {
+      model: modelKey,
+      loading: false,
+      ratioOptions,
+      resolutionOptions,
+      countOptions: countOptions.length ? countOptions : [1],
+      selectedRatio: String(res.default_ratio || ratioOptions[0] || '').trim(),
+      selectedResolution: String(res.default_resolution || resolutionOptions[0] || '').trim(),
+      selectedCount: Number.parseInt(String(res.default_count || countOptions[0] || 1), 10) || 1,
+      referenceSupported: !!res.reference_image_supported,
+      referenceImageDataUrl: '',
+      referenceImageName: '',
+      hint: `${res.name || modelKey}：支持 ${ratioOptions.length} 种比例 / ${resolutionOptions.length} 档分辨率 / ${countOptions.length || 1} 档数量`,
+    };
+    _imageModelOptionsCache[modelKey] = { ...nextState };
+    _chatImageOptions = nextState;
+  } catch (e) {
+    if (_selectedChatModel !== modelKey) return;
+    _chatImageOptions = {
+      model: modelKey,
+      loading: false,
+      ratioOptions: [],
+      resolutionOptions: [],
+      countOptions: [1],
+      selectedRatio: '',
+      selectedResolution: '',
+      selectedCount: 1,
+      referenceSupported: false,
+      referenceImageDataUrl: '',
+      referenceImageName: '',
+      hint: `加载参数失败：${e.message || '未知错误'}`,
+    };
+  }
+  renderChatImageControls();
 }
 
 // ===================== Model Plaza =====================
@@ -1799,10 +2088,19 @@ async function sendMessage() {
 
   try {
     if (imageMode) {
+      const imageBody = {
+        model,
+        prompt: text,
+        response_format: 'url',
+        n: Number(_chatImageOptions.selectedCount || 1),
+      };
+      if (_chatImageOptions.selectedRatio) imageBody.ratio = _chatImageOptions.selectedRatio;
+      if (_chatImageOptions.selectedResolution) imageBody.resolution = _chatImageOptions.selectedResolution;
+      if (_chatImageOptions.referenceImageDataUrl) imageBody.image = [_chatImageOptions.referenceImageDataUrl];
       const res = await fetch('/v1/images/generations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt: text, response_format: 'url', size: '1024x1024' }),
+        body: JSON.stringify(imageBody),
       });
       const data = await res.json();
       if (data.error) {
@@ -1883,12 +2181,48 @@ function formatRegProgress(task) {
   return `成功 ${progress.success} / 失败 ${progress.failed} / 剩余 ${progress.remaining} / 线程 ${progress.threads} / 活跃 ${progress.active}`;
 }
 
+function formatRegProxyExit(proxyExit) {
+  if (!proxyExit || typeof proxyExit !== 'object') return '';
+  const ip = proxyExit.ip || '?';
+  const loc = proxyExit.loc || '?';
+  const colo = proxyExit.colo ? ` / ${proxyExit.colo}` : '';
+  return `最近一次代理出口：${ip} / ${loc}${colo}`;
+}
+
+function parseRegProxyExitMessage(message) {
+  const text = String(message || '').trim();
+  if (!text.startsWith('🌍 本次代理出口:')) return null;
+  const body = text.split(':', 2)[1] || '';
+  const result = {};
+  body.trim().split(/\s+/).forEach(part => {
+    const idx = part.indexOf('=');
+    if (idx <= 0) return;
+    const key = part.slice(0, idx).trim();
+    const value = part.slice(idx + 1).trim();
+    if (!value) return;
+    if (['ip', 'loc', 'colo'].includes(key)) result[key] = value;
+  });
+  return Object.keys(result).length ? result : null;
+}
+
 function setRegTaskState(task) {
   _regTask = task || null;
   const regBtn = document.getElementById('regBtn');
   const stopBtn = document.getElementById('regStopBtn');
   const statusEl = document.getElementById('regTaskStatus');
+  const proxyExitEl = document.getElementById('regProxyExitStatus');
   const status = task?.status || 'idle';
+  const proxyExitText = formatRegProxyExit(task?.current_proxy_exit);
+
+  if (proxyExitEl) {
+    if (proxyExitText) {
+      proxyExitEl.textContent = proxyExitText;
+      proxyExitEl.style.display = '';
+    } else {
+      proxyExitEl.textContent = '最近一次代理出口：-';
+      proxyExitEl.style.display = 'none';
+    }
+  }
 
   if (status === 'running') {
     regBtn.disabled = true;
@@ -1956,6 +2290,11 @@ function connectRegStream(taskId) {
       const type = level === 'ERROR' ? 'err' : level === 'WARNING' ? 'warn' : level === 'SUCCESS' ? 'ok' : 'info';
       const ts = entry.ts ? new Date(entry.ts * 1000).toLocaleTimeString('zh-CN') : undefined;
       addRegLog(type, entry.message || '', ts);
+      const proxyExit = parseRegProxyExitMessage(entry.message || '');
+      if (proxyExit) {
+        _regTask = { ...(_regTask || {}), current_proxy_exit: proxyExit };
+        setRegTaskState(_regTask);
+      }
     } catch (_) {}
   });
 

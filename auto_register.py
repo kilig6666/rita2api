@@ -151,6 +151,68 @@ def _http_post(url: str, *, proxy: str = "", **kwargs):
     return requests.post(url, **kwargs)
 
 
+def _parse_cf_trace(text: str) -> dict:
+    result = {}
+    for line in str(text or "").splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key_text = str(key or "").strip()
+        if not key_text:
+            continue
+        result[key_text] = str(value or "").strip()
+    return result
+
+
+def _probe_register_proxy_exit(proxy: str, disable_ssl_verify: bool = False) -> dict:
+    """使用独立连接探测当前注册代理的出口 IP / 地区。失败时仅返回错误，不抛异常。"""
+    proxy_url = _normalize_proxy_value(proxy)
+    if not proxy_url:
+        return {
+            "ok": False,
+            "proxy": "",
+            "ip": None,
+            "loc": None,
+            "colo": None,
+            "trace": None,
+            "error": "proxy is empty",
+        }
+
+    session = requests.Session()
+    session.trust_env = False
+    try:
+        resp = session.get(
+            "https://cloudflare.com/cdn-cgi/trace",
+            timeout=8,
+            verify=not disable_ssl_verify,
+            proxies=_build_http_proxies(proxy_url),
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+        trace = _parse_cf_trace(resp.text)
+        return {
+            "ok": True,
+            "proxy": proxy_url,
+            "ip": trace.get("ip"),
+            "loc": trace.get("loc"),
+            "colo": trace.get("colo"),
+            "trace": trace,
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "proxy": proxy_url,
+            "ip": None,
+            "loc": None,
+            "colo": None,
+            "trace": None,
+            "error": str(exc),
+        }
+    finally:
+        session.close()
+
+
 def _normalize_mail_provider(value: str = "") -> str:
     provider = str(value or "").strip().lower()
     if provider in {"gptmail", "yydsmail", "moemail"}:
@@ -1291,6 +1353,21 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
         mail_proxy = _resolve_mail_proxy(cfg)
         if register_proxy:
             _log(f"🌐 当前注册代理: {register_proxy}", "INFO")
+            _ensure_not_stopped(should_stop, "probe_register_proxy")
+            probe_result = _probe_register_proxy_exit(
+                register_proxy,
+                disable_ssl_verify=bool(cfg.get("DISABLE_SSL_VERIFY")),
+            )
+            if probe_result.get("ok"):
+                probe_parts = [
+                    f"ip={probe_result.get('ip') or '?'}",
+                    f"loc={probe_result.get('loc') or '?'}",
+                ]
+                if probe_result.get("colo"):
+                    probe_parts.append(f"colo={probe_result.get('colo')}")
+                _log(f"🌍 本次代理出口: {' '.join(probe_parts)}", "INFO")
+            else:
+                _log(f"⚠️ 本次代理出口探测失败: {probe_result.get('error') or 'unknown'}", "WARNING")
         else:
             _log("🌐 当前注册按直连执行", "INFO")
         _log(f"🧩 当前打码服务: {captcha_cfg['label']} ({captcha_cfg['provider']})", "INFO")
