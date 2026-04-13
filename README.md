@@ -104,7 +104,7 @@ Cookie:  token=<gosplit_token>
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `GET` | `/api/accounts` | 账号列表 |
+| `GET` | `/api/accounts` | 账号列表（支持 `page` / `page_size` 分页，或 `ids_only=1` 拉全量 ID） |
 | `POST` | `/api/accounts` | 添加账号 |
 | `POST` | `/api/accounts/batch` | 批量导入 |
 | `POST` | `/api/accounts/batch-action` | 批量操作（启用/禁用/删除/测试/刷新） |

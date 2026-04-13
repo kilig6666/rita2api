@@ -133,7 +133,10 @@ def iter_rita_sse(response: requests.Response) -> Generator[JsonDict, None, None
     - `[DONE]`
     """
 
-    response.encoding = response.encoding or "utf-8"
+    # Rita SSE 实际返回 UTF-8 文本，但上游有时不会带 charset；
+    # requests 这时可能默认按 ISO-8859-1 解码，导致 `—` 变成 `â`。
+    # 这里统一强制按 UTF-8 解析，避免聊天内容出现乱码。
+    response.encoding = "utf-8"
     data_lines: list[str] = []
 
     def flush_event() -> Generator[JsonDict, None, None]:

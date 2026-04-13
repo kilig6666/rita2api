@@ -147,6 +147,14 @@ tr:hover { background: rgba(99,102,241,.04); }
 .modal select option { background: var(--card); color: var(--text); }
 .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
 .modal-info { font-size: 12px; color: var(--text2); background: rgba(99,102,241,.08); padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; line-height: 1.6; }
+.sync-scope-group { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.sync-scope-option { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); }
+.sync-scope-option input { width: auto; margin: 0; }
+.sync-result { display: none; margin-top: 14px; padding: 10px 12px; border-radius: 8px; font-size: 12px; line-height: 1.7; white-space: pre-line; border: 1px solid var(--border); background: var(--bg); color: var(--text2); }
+.sync-result.show { display: block; }
+.sync-result.success { border-color: rgba(34,197,94,.35); color: var(--green); }
+.sync-result.error { border-color: rgba(239,68,68,.35); color: var(--red); }
+.sync-result.info { border-color: rgba(99,102,241,.35); color: var(--text); }
 
 /* ==================== Toast ==================== */
 .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 20px; border-radius: 8px; font-size: 13px; z-index: 2000; animation: slideIn .3s ease; max-width: 320px; }
@@ -421,12 +429,14 @@ th .row-cb { margin: 0; }
     <div class="section-header">
       <h2>➕ <span>自动注册</span></h2>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <select class="model-select" id="regCount" style="width:auto;padding:7px 12px">
-          <option value="1">注册 1 个</option>
-          <option value="2">注册 2 个</option>
-          <option value="3">注册 3 个</option>
-          <option value="5">注册 5 个</option>
-        </select>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">
+          <span>数量</span>
+          <input class="model-select" id="regCount" type="number" min="1" max="50" step="1" value="1" style="width:88px;padding:7px 12px">
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text2)">
+          <span>线程</span>
+          <input class="model-select" id="regThreads" type="number" min="1" max="10" step="1" value="1" style="width:88px;padding:7px 12px">
+        </label>
         <select class="model-select" id="regCaptchaProvider" style="width:auto;padding:7px 12px">
           <option value="yescaptcha">打码: YesCaptcha</option>
           <option value="ohmycaptcha_local">打码: OhMyCaptcha Local</option>
@@ -479,6 +489,7 @@ th .row-cb { margin: 0; }
     <div class="section-header">
       <h2>👥 <span>账号管理</span></h2>
       <div class="header-actions" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button class="btn btn-primary btn-sm" onclick="showRemoteSyncModal()">☁️ 同步到远程</button>
         <button class="btn btn-outline btn-sm" onclick="showAddModal()">➕ 添加</button>
         <button class="btn btn-outline btn-sm" onclick="showBatchModal()">📦 批量导入</button>
         <button class="btn btn-outline btn-sm" onclick="resetAll()">🔄 重置故障</button>
@@ -503,6 +514,7 @@ th .row-cb { margin: 0; }
     <div class="batch-toolbar" id="batchToolbar">
       <span class="batch-count">已选 <strong id="batchSelectedCount">0</strong> 项</span>
       <div class="batch-actions">
+        <button class="btn btn-sm btn-outline" onclick="showRemoteSyncModal('selected')">☁️ 同步远程</button>
         <button class="btn btn-sm btn-outline" onclick="batchAction('test')">🧪 批量测试</button>
         <button class="btn btn-sm btn-success" onclick="batchAction('enable')">▶ 批量启用</button>
         <button class="btn btn-sm btn-outline" onclick="batchAction('disable')">⏸ 批量禁用</button>
@@ -540,6 +552,19 @@ th .row-cb { margin: 0; }
           <tr><td colspan="8" class="empty"><div class="icon">📭</div>加载中...</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div class="section-header" style="margin-top:12px">
+      <div id="accountPageInfo" style="font-size:12px;color:var(--text2)">-</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select class="model-select" id="accountPageSize" style="width:auto;padding:7px 12px" onchange="changeAccountPageSize(this.value)">
+          <option value="20">20 / 页</option>
+          <option value="50">50 / 页</option>
+          <option value="100">100 / 页</option>
+        </select>
+        <button class="btn btn-outline btn-sm" id="accountPrevBtn" onclick="changeAccountPage(_accountPager.page - 1)">上一页</button>
+        <button class="btn btn-outline btn-sm" id="accountNextBtn" onclick="changeAccountPage(_accountPager.page + 1)">下一页</button>
+      </div>
     </div>
   </div>
 
@@ -795,6 +820,30 @@ th .row-cb { margin: 0; }
   </div>
 </div>
 
+<!-- ==================== Remote Sync Modal ==================== -->
+<div class="modal-overlay" id="remoteSyncModal">
+  <div class="modal">
+    <h2>☁️ 同步账号到远程</h2>
+    <div class="modal-info">
+      说明：第一版只做“新增同步”。按邮箱去重；无邮箱跳过；积分少于 10 的账号跳过；远端已存在则不覆盖。
+    </div>
+    <label>远程服务地址 *</label>
+    <input type="url" id="remoteSyncBaseUrl" placeholder="https://your-server.example.com">
+    <label>远程管理 API Key *</label>
+    <input type="password" id="remoteSyncAuthToken" placeholder="输入远程 AUTH_TOKEN">
+    <label>同步范围</label>
+    <div class="sync-scope-group">
+      <label class="sync-scope-option"><input type="radio" name="remoteSyncScope" value="selected"> 仅同步当前已选账号</label>
+      <label class="sync-scope-option"><input type="radio" name="remoteSyncScope" value="all"> 同步全部本地账号</label>
+    </div>
+    <div class="sync-result" id="remoteSyncResult"></div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('remoteSyncModal')">取消</button>
+      <button class="btn btn-primary" id="remoteSyncSubmitBtn" onclick="submitRemoteSync()">开始同步</button>
+    </div>
+  </div>
+</div>
+
 
 <script>
 // ===================== Theme =====================
@@ -915,9 +964,16 @@ let _accounts = [];
 let _models = [];
 let _chatConversation = [];
 let _selectedIds = new Set();  // batch selection
+const REMOTE_SYNC_BASE_URL_KEY = 'rita_remote_sync_base_url';
 let _modelPlazaData = { models: [], categories: [], price_doc: {} };
 let _modelPlazaSearch = '';
 let _modelPlazaCategory = '__all__';
+let _accountPager = {
+  page: 1,
+  pageSize: 20,
+  total: 0,
+  totalPages: 1,
+};
 let _requestLog = {
   page: 1,
   pageSize: 20,
@@ -956,13 +1012,22 @@ function fmtNum(n) { if (n >= 1000000) return (n/1000000).toFixed(1)+'M'; if (n 
 // ===================== Account Management =====================
 async function loadAccounts() {
   try {
+    const params = new URLSearchParams({
+      page: String(Math.max(1, _accountPager.page || 1)),
+      page_size: String(_accountPager.pageSize || 20),
+    });
     const [accounts, summary] = await Promise.all([
-      api('GET', '/api/accounts'),
+      api('GET', '/api/accounts?' + params.toString()),
       api('GET', '/api/accounts/summary'),
     ]);
     _accounts = accounts.accounts || [];
+    _accountPager.page = accounts.pagination?.page || 1;
+    _accountPager.pageSize = accounts.pagination?.page_size || _accountPager.pageSize || 20;
+    _accountPager.total = accounts.pagination?.total || 0;
+    _accountPager.totalPages = accounts.pagination?.total_pages || 1;
     renderStatsBar(summary);
     renderAccountTable(_accounts);
+    renderAccountPagination();
   } catch(e) { if (e.message !== 'Unauthorized') toast('加载账号失败: '+e.message, 'error'); }
 }
 
@@ -976,7 +1041,13 @@ function renderStatsBar(s) {
 
 function renderAccountTable(accounts) {
   const tbody = document.getElementById('accountTable');
-  if (!accounts.length) { tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账号</td></tr>'; updateBatchToolbar(); return; }
+  if (!accounts.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty"><div class="icon">📭</div>暂无账号</td></tr>';
+    const selectAllCb = document.getElementById('selectAllCb');
+    if (selectAllCb) selectAllCb.checked = false;
+    updateBatchToolbar();
+    return;
+  }
   tbody.innerHTML = accounts.map(a => {
     const checked = _selectedIds.has(a.id) ? 'checked' : '';
     const statusBadge = !a.enabled ? '<span class="badge badge-disabled">已禁用</span>'
@@ -1009,7 +1080,42 @@ function renderAccountTable(accounts) {
       </td>
     </tr>`;
   }).join('');
+  const selectAllCb = document.getElementById('selectAllCb');
+  if (selectAllCb) {
+    selectAllCb.checked = accounts.length > 0 && accounts.every(a => _selectedIds.has(a.id));
+  }
   updateBatchToolbar();
+}
+
+function renderAccountPagination() {
+  const total = _accountPager.total || 0;
+  const page = _accountPager.page || 1;
+  const pageSize = _accountPager.pageSize || 20;
+  const totalPages = _accountPager.totalPages || 1;
+  const start = total ? (page - 1) * pageSize + 1 : 0;
+  const end = total ? Math.min(page * pageSize, total) : 0;
+  document.getElementById('accountPageInfo').textContent = total
+    ? `第 ${page}/${totalPages} 页 · 显示 ${start}-${end} / 共 ${total} 个账号`
+    : '暂无数据';
+  document.getElementById('accountPrevBtn').disabled = page <= 1;
+  document.getElementById('accountNextBtn').disabled = page >= totalPages;
+  const pageSizeEl = document.getElementById('accountPageSize');
+  if (pageSizeEl && String(pageSizeEl.value) !== String(pageSize)) {
+    pageSizeEl.value = String(pageSize);
+  }
+}
+
+function changeAccountPageSize(value) {
+  const parsed = parseInt(String(value || '20'), 10);
+  _accountPager.pageSize = [20, 50, 100].includes(parsed) ? parsed : 20;
+  _accountPager.page = 1;
+  loadAccounts();
+}
+
+function changeAccountPage(page) {
+  const nextPage = Math.max(1, Math.min(page, _accountPager.totalPages || 1));
+  _accountPager.page = nextPage;
+  loadAccounts();
 }
 
 // ===================== Batch Selection =====================
@@ -1026,10 +1132,16 @@ function selectAllAccounts() {
   document.getElementById('selectAllCb').checked = true;
   renderAccountTable(_accounts);
 }
-function selectAllGlobal() {
-  // Same as selectAllAccounts since _accounts already has all data
-  selectAllAccounts();
-  toast(`已选择全部 ${_accounts.length} 个账号`, 'info');
+async function selectAllGlobal() {
+  try {
+    const res = await api('GET', '/api/accounts?ids_only=1');
+    const ids = Array.isArray(res.ids) ? res.ids : [];
+    ids.forEach(id => _selectedIds.add(id));
+    renderAccountTable(_accounts);
+    toast(`已选择全部 ${ids.length} 个账号`, 'info');
+  } catch (e) {
+    if (e.message !== 'Unauthorized') toast('全选所有失败: ' + e.message, 'error');
+  }
 }
 function clearSelection() {
   _selectedIds.clear();
@@ -1074,6 +1186,93 @@ function showAddModal() { ['addToken','addName','addVisitorId','addEmail','addPa
 function showBatchModal() { document.getElementById('batchModal').classList.add('show'); document.getElementById('batchData').focus(); }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
 
+function setRemoteSyncResult(type, text) {
+  const el = document.getElementById('remoteSyncResult');
+  if (!el) return;
+  if (!text) {
+    el.className = 'sync-result';
+    el.textContent = '';
+    return;
+  }
+  el.className = `sync-result show ${type || 'info'}`;
+  el.textContent = text;
+}
+
+function getRemoteSyncScope() {
+  const checked = document.querySelector('input[name="remoteSyncScope"]:checked');
+  return checked ? checked.value : 'selected';
+}
+
+function buildRemoteSyncSummary(res) {
+  const lines = [
+    `目标地址：${res.remote_base_url || '-'}`,
+    `同步范围：${res.scope === 'all' ? '全部账号' : '已选账号'}`,
+    `扫描总数：${res.scanned_total ?? 0}`,
+    `符合条件：${res.eligible_total ?? 0}`,
+    `成功新增：${res.synced ?? 0}`,
+    `远端已存在跳过：${res.skipped_remote_exists ?? 0}`,
+    `无邮箱跳过：${res.skipped_no_email ?? 0}`,
+    `低积分跳过：${res.skipped_low_quota ?? 0}`,
+    `本地重复邮箱跳过：${res.skipped_local_duplicate ?? 0}`,
+  ];
+  if (res.skipped_not_found) lines.push(`本地未找到跳过：${res.skipped_not_found}`);
+  if (res.failed) lines.push(`失败数：${res.failed}`);
+  if (res.message) lines.push(`结果：${res.message}`);
+  return lines.join('\n');
+}
+
+function showRemoteSyncModal(scope = '') {
+  const baseUrl = localStorage.getItem(REMOTE_SYNC_BASE_URL_KEY) || '';
+  const defaultScope = scope === 'selected'
+    ? 'selected'
+    : (_selectedIds.size > 0 ? 'selected' : 'all');
+  document.getElementById('remoteSyncBaseUrl').value = baseUrl;
+  document.getElementById('remoteSyncAuthToken').value = '';
+  document.querySelectorAll('input[name="remoteSyncScope"]').forEach(el => {
+    el.checked = el.value === defaultScope;
+  });
+  setRemoteSyncResult('', '');
+  document.getElementById('remoteSyncModal').classList.add('show');
+  document.getElementById('remoteSyncBaseUrl').focus();
+}
+
+async function submitRemoteSync() {
+  const remoteBaseUrl = document.getElementById('remoteSyncBaseUrl').value.trim();
+  const remoteAuthToken = document.getElementById('remoteSyncAuthToken').value.trim();
+  const scope = getRemoteSyncScope();
+  const ids = [..._selectedIds];
+  const submitBtn = document.getElementById('remoteSyncSubmitBtn');
+  const originalText = submitBtn.textContent;
+
+  if (!remoteBaseUrl) { toast('请输入远程服务地址', 'error'); return; }
+  if (!remoteAuthToken) { toast('请输入远程管理 API Key', 'error'); return; }
+  if (scope === 'selected' && !ids.length) { toast('请先选择至少一个账号', 'error'); return; }
+
+  submitBtn.disabled = true;
+  submitBtn.textContent = '同步中...';
+  setRemoteSyncResult('info', '正在同步，请稍候...');
+
+  try {
+    const res = await api('POST', '/api/accounts/sync-remote', {
+      remote_base_url: remoteBaseUrl,
+      remote_auth_token: remoteAuthToken,
+      scope,
+      ids: scope === 'selected' ? ids : [],
+    });
+    localStorage.setItem(REMOTE_SYNC_BASE_URL_KEY, remoteBaseUrl);
+    setRemoteSyncResult('success', buildRemoteSyncSummary(res));
+    toast(res.message || `同步完成，新增 ${res.synced || 0} 个账号`, 'success');
+  } catch (e) {
+    const payload = e.payload || {};
+    const message = payload.error || payload.message || e.message || '同步失败';
+    setRemoteSyncResult('error', `同步失败：${message}`);
+    if (e.message !== 'Unauthorized') toast('远程同步失败: ' + message, 'error');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = originalText;
+  }
+}
+
 async function addAccount() {
   const token = document.getElementById('addToken').value.trim();
   if (!token) { toast('Token 不能为空', 'error'); return; }
@@ -1100,7 +1299,7 @@ async function batchImport() {
 
 async function deleteAccount(id, name) {
   if (!confirm(`确定删除账号「${name}」？`)) return;
-  try { await api('DELETE', `/api/accounts/${id}`); toast('账号已删除', 'success'); loadAccounts(); loadStats(); }
+  try { _selectedIds.delete(id); await api('DELETE', `/api/accounts/${id}`); toast('账号已删除', 'success'); loadAccounts(); loadStats(); }
   catch(e) { if (e.message !== 'Unauthorized') toast('删除失败', 'error'); }
 }
 
@@ -1215,14 +1414,14 @@ async function runHealthCheck() {
 
 async function purgeInvalid() {
   if (!confirm('确定清除所有无效账号？')) return;
-  try { const res = await api('POST', '/api/accounts/purge-invalid'); toast(`已清除 ${res.purged || 0} 个无效账号`, 'success'); loadAccounts(); }
+  try { const res = await api('POST', '/api/accounts/purge-invalid'); _selectedIds.clear(); toast(`已清除 ${res.purged || 0} 个无效账号`, 'success'); loadAccounts(); }
   catch(e) { if (e.message !== 'Unauthorized') toast('清除失败', 'error'); }
 }
 
 async function clearAllAccounts() {
   if (!confirm('⚠️ 危险操作！确定清除全部账号？此操作不可恢复！')) return;
   if (!confirm('再次确认：清除 ALL 账号？')) return;
-  try { const res = await api('DELETE', '/api/accounts/clear'); toast(`已清除 ${res.deleted || 0} 个账号`, 'success'); loadAccounts(); loadStats(); }
+  try { const res = await api('DELETE', '/api/accounts/clear'); _selectedIds.clear(); toast(`已清除 ${res.deleted || 0} 个账号`, 'success'); loadAccounts(); loadStats(); }
   catch(e) { if (e.message !== 'Unauthorized') toast('清除失败', 'error'); }
 }
 
@@ -1498,6 +1697,21 @@ function scrollRegLog(force = false) {
   }
 }
 
+function getRegProgress(task) {
+  const requested = Number(task?.requested || 0);
+  const success = Number(task?.success_count ?? task?.registered ?? 0);
+  const failed = Number(task?.failed_count || 0);
+  const remaining = Math.max(0, Number(task?.remaining_count ?? (requested - success - failed)));
+  const threads = Math.max(1, Number(task?.threads || 1));
+  const active = Math.max(0, Number(task?.active_workers || 0));
+  return { requested, success, failed, remaining, threads, active };
+}
+
+function formatRegProgress(task) {
+  const progress = getRegProgress(task);
+  return `成功 ${progress.success} / 失败 ${progress.failed} / 剩余 ${progress.remaining} / 线程 ${progress.threads} / 活跃 ${progress.active}`;
+}
+
 function setRegTaskState(task) {
   _regTask = task || null;
   const regBtn = document.getElementById('regBtn');
@@ -1511,7 +1725,7 @@ function setRegTaskState(task) {
     stopBtn.style.display = '';
     stopBtn.disabled = false;
     stopBtn.textContent = '⛔ 强行终止';
-    statusEl.textContent = `运行中：已成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.textContent = `运行中：${formatRegProgress(task)}`;
     statusEl.style.color = 'var(--accent)';
     return;
   }
@@ -1521,7 +1735,7 @@ function setRegTaskState(task) {
     stopBtn.style.display = '';
     stopBtn.disabled = true;
     stopBtn.textContent = '停止中...';
-    statusEl.textContent = `停止中：已成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.textContent = `停止中：${formatRegProgress(task)}`;
     statusEl.style.color = 'var(--orange)';
     return;
   }
@@ -1533,13 +1747,13 @@ function setRegTaskState(task) {
   stopBtn.textContent = '⛔ 强行终止';
 
   if (status === 'completed') {
-    statusEl.textContent = `已完成：成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.textContent = `已完成：${formatRegProgress(task)}`;
     statusEl.style.color = 'var(--green)';
   } else if (status === 'stopped') {
-    statusEl.textContent = `已终止：成功 ${task.registered || 0}/${task.requested || 0}`;
+    statusEl.textContent = `已终止：${formatRegProgress(task)}`;
     statusEl.style.color = 'var(--orange)';
   } else if (status === 'failed') {
-    statusEl.textContent = `失败：${task.error || '未知错误'}`;
+    statusEl.textContent = `失败：${task.error || '未知错误'} | ${formatRegProgress(task)}`;
     statusEl.style.color = 'var(--red)';
   } else {
     statusEl.textContent = '空闲';
@@ -1674,6 +1888,10 @@ function loadRegConfig() {
       document.getElementById('descPool').textContent = `活跃: ${summary.active ?? 0} / 总: ${summary.total ?? 0} / 点数: ${summary.total_quota ?? 0}`;
 
       const task = cfg.current_task || null;
+      const regCountInput = document.getElementById('regCount');
+      const regThreadsInput = document.getElementById('regThreads');
+      if (task?.requested && regCountInput) regCountInput.value = String(task.requested);
+      if (task?.threads && regThreadsInput) regThreadsInput.value = String(task.threads);
       setRegTaskState(task);
       if (task?.id && (task.status === 'running' || task.status === 'stopping')) {
         if (_regStreamTaskId !== task.id) {
@@ -1691,14 +1909,33 @@ function loadRegConfig() {
 
 async function triggerRegister() {
   initRegLog();
-  const count = parseInt(document.getElementById('regCount').value);
+  const countInput = document.getElementById('regCount');
+  const threadsInput = document.getElementById('regThreads');
+  let count = parseInt(countInput?.value, 10);
+  let threads = parseInt(threadsInput?.value, 10);
+  if (!Number.isFinite(count) || count < 1) count = 1;
+  if (!Number.isFinite(threads) || threads < 1) threads = 1;
+  if (count > 50) {
+    count = 50;
+    toast('单次最多注册 50 个账号，已自动调整', 'error');
+  }
+  if (threads > 10) {
+    threads = 10;
+    toast('手动注册线程数最多 10，已自动调整', 'error');
+  }
+  if (threads > count) {
+    threads = count;
+    toast('线程数不能大于注册数量，已自动调整', 'error');
+  }
+  if (countInput) countInput.value = String(count);
+  if (threadsInput) threadsInput.value = String(threads);
   const captchaProvider = document.getElementById('regCaptchaProvider')?.value || 'yescaptcha';
   document.getElementById('regLog').innerHTML = '';
   _regStickBottom = true;
-  addRegLog('info', `开始注册 ${count} 个账号... 打码=${captchaProvider}`);
+  addRegLog('info', `开始注册 ${count} 个账号... 线程=${threads}，打码=${captchaProvider}`);
 
   try {
-    const res = await api('POST', '/api/auto-register/start', { count, captcha_provider: captchaProvider });
+    const res = await api('POST', '/api/auto-register/start', { count, threads, captcha_provider: captchaProvider });
     const task = res.task || null;
     _regSeenSeq = 0;
     if (task?.id) {

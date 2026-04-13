@@ -3,6 +3,7 @@ import unittest
 
 from adapters.anthropic_protocol import parse_tool_calls_from_text
 from adapters.openai_protocol import parse_tool_response
+from services.rita_gateway import iter_rita_sse
 
 
 class ParseToolResponseTests(unittest.TestCase):
@@ -69,6 +70,41 @@ class ParseToolResponseTests(unittest.TestCase):
                     },
                 },
             ],
+        )
+
+
+class RitaSseEncodingTests(unittest.TestCase):
+    class _FakeResponse:
+        def __init__(self, body: bytes, encoding: str):
+            self._body = body
+            self.encoding = encoding
+
+        def iter_lines(self, decode_unicode: bool = False):
+            for line in self._body.splitlines():
+                if decode_unicode:
+                    yield line.decode(self.encoding)
+                else:
+                    yield line
+
+    def test_iter_rita_sse_forces_utf8_even_when_response_declares_latin1(self):
+        payload = {
+            "choices": [
+                {
+                    "delta": {
+                        "content": "I'm Claude — 我可以帮你处理代码问题",
+                    }
+                }
+            ]
+        }
+        body = f"data: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+        response = self._FakeResponse(body, "ISO-8859-1")
+
+        events = list(iter_rita_sse(response))
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(
+            events[0]["choices"][0]["delta"]["content"],
+            "I'm Claude — 我可以帮你处理代码问题",
         )
 
 

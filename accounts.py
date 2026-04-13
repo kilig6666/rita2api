@@ -41,6 +41,29 @@ def _mask(s: str) -> str:
     return s[:4] + "***" + s[-4:]
 
 
+def _coerce_enabled_value(value, default: int = 1) -> int:
+    """将 enabled 风格输入统一成 0/1。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "y", "on"}:
+            return 1
+        if text in {"0", "false", "no", "n", "off"}:
+            return 0
+    return 1 if bool(value) else 0
+
+
+def _coerce_non_negative_int(value, default: int) -> int:
+    """将 quota 等输入统一成非负整数。"""
+    if value in (None, ""):
+        return default
+    try:
+        return max(0, int(float(value)))
+    except Exception:
+        return default
+
+
 def _row_to_status(row) -> dict:
     """Convert a sqlite3.Row to the API status dict."""
     d = dict(row)
@@ -137,20 +160,58 @@ class AccountManager:
         rows = self._db.fetchall("SELECT * FROM accounts ORDER BY created_at DESC")
         return [_row_to_status(r) for r in rows]
 
+    def list_page(self, page=1, page_size=20) -> dict:
+        try:
+            page_num = max(1, int(page))
+        except Exception:
+            page_num = 1
+        try:
+            page_size_num = int(page_size)
+        except Exception:
+            page_size_num = 20
+        if page_size_num not in (20, 50, 100):
+            page_size_num = 20
+
+        total_row = self._db.fetchone("SELECT COUNT(*) AS total FROM accounts")
+        total = total_row["total"] or 0
+        total_pages = max(1, (total + page_size_num - 1) // page_size_num) if total else 1
+        page_num = min(page_num, total_pages)
+        offset = (page_num - 1) * page_size_num
+        rows = self._db.fetchall(
+            "SELECT * FROM accounts ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (page_size_num, offset),
+        )
+        return {
+            "accounts": [_row_to_status(r) for r in rows],
+            "pagination": {
+                "page": page_num,
+                "page_size": page_size_num,
+                "total": total,
+                "total_pages": total_pages,
+            },
+        }
+
+    def list_all_ids(self) -> list[str]:
+        rows = self._db.fetchall("SELECT id FROM accounts ORDER BY created_at DESC")
+        return [r["id"] for r in rows]
+
     def get(self, account_id: str) -> Account | None:
         row = self._db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
         return Account(row) if row else None
 
     def add(self, token: str, visitorid: str = "", name: str = "",
             email: str = "", password: str = "",
-            mail_provider: str = "", mail_api_key: str = "") -> Account:
+            mail_provider: str = "", mail_api_key: str = "",
+            quota_remain=None, enabled=None) -> Account:
         aid = uuid.uuid4().hex[:8]
         name = name or f"account-{aid}"
+        enabled_value = _coerce_enabled_value(enabled, default=1)
+        quota_value = _coerce_non_negative_int(quota_remain, default=100)
         self._db.execute(
             """INSERT INTO accounts (id,name,token,visitorid,enabled,email,password,
-               mail_provider,mail_api_key,created_at,quota_remain) VALUES (?,?,?,?,1,?,?,?,?,?,100)""",
-            (aid, name, token, visitorid, email, password,
-             mail_provider, mail_api_key, time.time())
+               mail_provider,mail_api_key,created_at,quota_remain) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (aid, name, token, visitorid, enabled_value, email, password,
+             mail_provider, mail_api_key, time.time(), quota_value)
         )
         return self.get(aid)
 
@@ -168,6 +229,8 @@ class AccountManager:
                 password=item.get("password", "").strip(),
                 mail_provider=item.get("mail_provider", "").strip(),
                 mail_api_key=item.get("mail_api_key", "").strip(),
+                quota_remain=item.get("quota_remain"),
+                enabled=item.get("enabled"),
             )
             if acc:
                 added.append(acc)

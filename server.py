@@ -430,16 +430,45 @@ def log(msg, level="INFO"):
 
 _manual_register_lock = Lock()
 _manual_register_task: dict | None = None
+_MANUAL_REGISTER_MAX_COUNT = 50
+_MANUAL_REGISTER_MAX_THREADS = 10
+
+
+def _normalize_manual_register_count(value, default: int = 1) -> int:
+    try:
+        count = int(value)
+    except Exception:
+        count = default
+    return min(max(count, 1), _MANUAL_REGISTER_MAX_COUNT)
+
+
+def _normalize_manual_register_threads(value, count: int, default: int = 1) -> int:
+    try:
+        threads = int(value)
+    except Exception:
+        threads = default
+    threads = min(max(threads, 1), _MANUAL_REGISTER_MAX_THREADS)
+    return min(threads, max(count, 1))
 
 
 def _manual_register_public(task: dict | None, include_logs: bool = False) -> dict | None:
     if not task:
         return None
+    success_count = int(task.get("success_count", len(task.get("accounts") or [])) or 0)
+    failed_count = int(task.get("failed_count", 0) or 0)
+    requested = int(task.get("requested", 0) or 0)
+    active_workers = max(0, int(task.get("active_workers", 0) or 0))
+    remaining = max(0, requested - success_count - failed_count)
     result = {
         "id": task["id"],
         "status": task["status"],
-        "requested": task["requested"],
-        "registered": len(task.get("accounts") or []),
+        "requested": requested,
+        "registered": success_count,
+        "success_count": success_count,
+        "failed_count": failed_count,
+        "remaining_count": remaining,
+        "active_workers": active_workers,
+        "threads": task.get("threads") or 1,
         "stop_requested": bool(task.get("stop_requested")),
         "captcha_provider": task.get("captcha_provider") or "yescaptcha",
         "created_at": task["created_at"],
@@ -482,6 +511,41 @@ def _append_manual_register_log(task_id: str, msg: str, level: str = "INFO"):
     log(f"[manual-register:{task_id[:8]}] {text}", level_name)
 
 
+def _append_manual_register_result(task_id: str, result: dict):
+    global _manual_register_task
+    if not result:
+        return
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task or task["id"] != task_id:
+            return
+        task["updated_at"] = time.time()
+        task["success_count"] = int(task.get("success_count", 0) or 0) + 1
+        task.setdefault("accounts", []).append(dict(result))
+
+
+def _mark_manual_register_failure(task_id: str, count: int = 1):
+    global _manual_register_task
+    if count <= 0:
+        return
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task or task["id"] != task_id:
+            return
+        task["updated_at"] = time.time()
+        task["failed_count"] = int(task.get("failed_count", 0) or 0) + int(count)
+
+
+def _set_manual_register_active_workers(task_id: str, active_workers: int):
+    global _manual_register_task
+    with _manual_register_lock:
+        task = _manual_register_task
+        if not task or task["id"] != task_id:
+            return
+        task["updated_at"] = time.time()
+        task["active_workers"] = max(0, int(active_workers or 0))
+
+
 def _set_manual_register_status(task_id: str, status: str, **updates):
     global _manual_register_task
     with _manual_register_lock:
@@ -500,44 +564,66 @@ def _manual_register_should_stop(task_id: str) -> bool:
         return bool(task and task["id"] == task_id and task.get("stop_requested"))
 
 
-def _run_manual_register_task(task_id: str, count: int, captcha_provider: str):
+def _run_manual_register_task(task_id: str, count: int, threads: int, captcha_provider: str):
     def task_log(message: str, level: str = "INFO"):
         _append_manual_register_log(task_id, message, level)
 
-    task_log(f"🚀 手动注册任务已启动，请求数量={count}，打码={captcha_provider or 'yescaptcha'}", "INFO")
+    task_log(
+        f"🚀 手动注册任务已启动，请求数量={count}，线程={threads}，打码={captcha_provider or 'yescaptcha'}",
+        "INFO",
+    )
     try:
         auto_register.set_thread_log_fn(task_log)
         results = auto_register.auto_register_batch(
             count=count,
+            threads=threads,
             account_manager=acm,
             upstream_url=UPSTREAM_URL,
             origin=RITA_ORIGIN,
             captcha_provider_override=captcha_provider,
             should_stop=lambda: _manual_register_should_stop(task_id),
+            on_result=lambda item: _append_manual_register_result(task_id, item),
+            on_failure=lambda *_args, **_kwargs: _mark_manual_register_failure(task_id),
+            on_active_workers_change=lambda current: _set_manual_register_active_workers(task_id, current),
         )
-        _set_manual_register_status(task_id, "completed", accounts=list(results or []), error="")
+        _set_manual_register_status(
+            task_id,
+            "completed",
+            accounts=list(results or []),
+            success_count=len(results or []),
+            active_workers=0,
+            error="",
+        )
         task_log(f"✅ 手动注册完成：成功 {len(results)}/{count}", "SUCCESS")
     except auto_register.RegistrationStopped as e:
         partial = list(getattr(e, "results", []) or [])
-        _set_manual_register_status(task_id, "stopped", accounts=partial, error="")
+        _set_manual_register_status(
+            task_id,
+            "stopped",
+            accounts=partial,
+            success_count=len(partial),
+            active_workers=0,
+            error="",
+        )
         task_log(f"⛔ 已按请求停止手动注册，已成功 {len(partial)}/{count}", "WARNING")
     except Exception as e:
-        _set_manual_register_status(task_id, "failed", error=str(e))
+        _set_manual_register_status(task_id, "failed", active_workers=0, error=str(e))
         task_log(f"❌ 手动注册异常: {e}", "ERROR")
     finally:
         auto_register.set_thread_log_fn(None)
 
 
-def _start_manual_register_task(count: int, captcha_provider: str) -> tuple[dict | None, str | None]:
+def _start_manual_register_task(count: int, threads: int, captcha_provider: str) -> tuple[dict | None, str | None]:
     global _manual_register_task
     with _manual_register_lock:
         if _manual_register_task and _manual_register_task["status"] in {"running", "stopping"}:
             return _manual_register_public(_manual_register_task), "busy"
-        task_id = hashlib.md5(f"{time.time()}-{count}-{captcha_provider}".encode()).hexdigest()[:16]
+        task_id = hashlib.md5(f"{time.time()}-{count}-{threads}-{captcha_provider}".encode()).hexdigest()[:16]
         _manual_register_task = {
             "id": task_id,
             "status": "running",
             "requested": count,
+            "threads": threads,
             "captcha_provider": captcha_provider or "yescaptcha",
             "stop_requested": False,
             "created_at": time.time(),
@@ -545,11 +631,14 @@ def _start_manual_register_task(count: int, captcha_provider: str) -> tuple[dict
             "seq": 0,
             "logs": [],
             "accounts": [],
+            "success_count": 0,
+            "failed_count": 0,
+            "active_workers": 0,
             "error": "",
         }
     threading.Thread(
         target=_run_manual_register_task,
-        args=(task_id, count, captcha_provider),
+        args=(task_id, count, threads, captcha_provider),
         daemon=True,
         name=f"manual-register-{task_id[:8]}",
     ).start()
@@ -924,12 +1013,94 @@ def api_model_plaza():
         "synced_at": _models_cache_ts,
     })
 
+
+def _normalize_email_key(email: str) -> str:
+    return str(email or "").strip().lower()
+
+
+def _normalize_remote_base_url(remote_base_url: str) -> str:
+    """归一化远程服务地址，兼容误填 /api/accounts。"""
+    text = str(remote_base_url or "").strip().rstrip("/")
+    if text.endswith("/api/accounts"):
+        text = text[:-len("/api/accounts")]
+    if not text.startswith(("http://", "https://")):
+        raise ValueError("远程服务地址必须以 http:// 或 https:// 开头")
+    return text
+
+
+def _extract_api_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except Exception:
+        text = response.text.strip()
+        return text or f"HTTP {response.status_code}"
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or f"HTTP {response.status_code}")
+        if error:
+            return str(error)
+        if payload.get("message"):
+            return str(payload.get("message"))
+    return f"HTTP {response.status_code}"
+
+
+def _load_accounts_for_remote_sync(scope: str, selected_ids: list[str]) -> tuple[list, int]:
+    """按 scope 读取本地真实账号对象，并统计找不到的 id。"""
+    if scope == "all":
+        source_ids = acm.list_all_ids()
+    else:
+        seen = set()
+        source_ids = []
+        for raw_id in selected_ids:
+            aid = str(raw_id or "").strip()
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            source_ids.append(aid)
+
+    accounts = []
+    missing_count = 0
+    for account_id in source_ids:
+        acc = acm.get(account_id)
+        if not acc:
+            missing_count += 1
+            continue
+        accounts.append(acc)
+    return accounts, missing_count
+
+
+def _build_remote_sync_payload(acc) -> dict:
+    """构造发往远端导入接口的账号载荷。"""
+    return {
+        "name": acc.name,
+        "token": acc.token,
+        "visitorid": acc.visitorid,
+        "email": acc.email,
+        "password": acc.password,
+        "mail_provider": acc.mail_provider,
+        "mail_api_key": acc.mail_api_key,
+        "quota_remain": acc.quota_remain,
+        "enabled": acc.enabled,
+    }
+
 # =========================================================================
 #  Account Management API  (/api/accounts/*)
 # =========================================================================
 @app.route("/api/accounts", methods=["GET"])
 def api_list_accounts():
-    return jsonify({"accounts": acm.list_all()})
+    ids_only = str(request.args.get("ids_only", "")).strip().lower() in {"1", "true", "yes"}
+    if ids_only:
+        ids = acm.list_all_ids()
+        return jsonify({"ids": ids, "total": len(ids)})
+
+    paginate_requested = any(k in request.args for k in ("page", "page_size", "pageSize"))
+    if not paginate_requested:
+        return jsonify({"accounts": acm.list_all()})
+
+    page = request.args.get("page", "1")
+    page_size = request.args.get("page_size", request.args.get("pageSize", "20"))
+    return jsonify(acm.list_page(page=page, page_size=page_size))
 
 @app.route("/api/accounts/summary", methods=["GET"])
 def api_account_summary():
@@ -937,7 +1108,7 @@ def api_account_summary():
 
 @app.route("/api/accounts", methods=["POST"])
 def api_add_account():
-    """Add a single account: {token, visitorid?, name?, email?, password?, mail_provider?, mail_api_key?}"""
+    """Add a single account: {token, visitorid?, name?, email?, password?, mail_provider?, mail_api_key?, quota_remain?, enabled?}"""
     data = request.json or {}
     token = data.get("token", "").strip()
     if not token:
@@ -950,6 +1121,8 @@ def api_add_account():
         password=data.get("password", "").strip(),
         mail_provider=data.get("mail_provider", "").strip(),
         mail_api_key=data.get("mail_api_key", "").strip(),
+        quota_remain=data.get("quota_remain"),
+        enabled=data.get("enabled"),
     )
     log(f"➕ Account added: {acc.name} ({acc.id})", "SUCCESS")
     return jsonify({"ok": True, "account": acc.to_status()}), 201
@@ -958,7 +1131,7 @@ def api_add_account():
 def api_batch_add():
     """
     Batch add accounts.
-    Body: { "accounts": [ {token, visitorid?, name?}, ... ] }
+    Body: { "accounts": [ {token, visitorid?, name?, quota_remain?, enabled?}, ... ] }
     """
     data = request.json or {}
     items = data.get("accounts", [])
@@ -971,6 +1144,142 @@ def api_batch_add():
         "added": len(added),
         "accounts": [a.to_status() for a in added],
     }), 201
+
+
+@app.route("/api/accounts/sync-remote", methods=["POST"])
+def api_sync_accounts_to_remote():
+    """将本地账号按邮箱去重后同步到远端管理服务。"""
+    data = request.json or {}
+    remote_base_url_raw = data.get("remote_base_url", "")
+    remote_auth_token = str(data.get("remote_auth_token", "") or "").strip()
+    scope = str(data.get("scope", "selected") or "selected").strip().lower()
+    selected_ids = data.get("ids", [])
+
+    if scope not in {"selected", "all"}:
+        return jsonify({"error": "scope must be selected or all"}), 400
+    if scope == "selected" and not selected_ids:
+        return jsonify({"error": "请选择至少一个账号后再同步"}), 400
+    if not remote_auth_token:
+        return jsonify({"error": "remote_auth_token is required"}), 400
+
+    try:
+        remote_base_url = _normalize_remote_base_url(remote_base_url_raw)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    local_accounts, missing_count = _load_accounts_for_remote_sync(
+        scope,
+        selected_ids if isinstance(selected_ids, list) else [],
+    )
+    result = {
+        "ok": True,
+        "scope": scope,
+        "remote_base_url": remote_base_url,
+        "scanned_total": len(local_accounts) + missing_count,
+        "eligible_total": 0,
+        "synced": 0,
+        "failed": 0,
+        "skipped_not_found": missing_count,
+        "skipped_no_email": 0,
+        "skipped_low_quota": 0,
+        "skipped_local_duplicate": 0,
+        "skipped_remote_exists": 0,
+        "errors": [],
+    }
+
+    deduped_payloads = []
+    local_email_seen = set()
+    for acc in local_accounts:
+        email_key = _normalize_email_key(acc.email)
+        if not email_key:
+            result["skipped_no_email"] += 1
+            continue
+        if (acc.quota_remain or 0) < 10:
+            result["skipped_low_quota"] += 1
+            continue
+        if email_key in local_email_seen:
+            result["skipped_local_duplicate"] += 1
+            continue
+        local_email_seen.add(email_key)
+        deduped_payloads.append(_build_remote_sync_payload(acc))
+
+    result["eligible_total"] = len(deduped_payloads)
+
+    if not deduped_payloads:
+        result["message"] = "没有符合条件的账号可同步"
+        return jsonify(result)
+
+    headers = {
+        "Authorization": f"Bearer {remote_auth_token}",
+        "Content-Type": "application/json",
+    }
+    remote_accounts_url = f"{remote_base_url}/api/accounts"
+
+    try:
+        remote_list_resp = requests.get(remote_accounts_url, headers=headers, timeout=20)
+    except requests.RequestException as e:
+        return jsonify({"error": f"拉取远端账号列表失败: {e}"}), 502
+
+    if remote_list_resp.status_code == 401:
+        return jsonify({"error": "远端鉴权失败，请检查远程管理 API Key"}), 400
+    if not remote_list_resp.ok:
+        return jsonify({"error": f"拉取远端账号列表失败: {_extract_api_error_message(remote_list_resp)}"}), 502
+
+    try:
+        remote_accounts_payload = remote_list_resp.json()
+    except Exception:
+        return jsonify({"error": "远端账号列表返回了非 JSON 响应"}), 502
+
+    remote_accounts = remote_accounts_payload.get("accounts", []) if isinstance(remote_accounts_payload, dict) else []
+    remote_email_set = {
+        _normalize_email_key(item.get("email", ""))
+        for item in remote_accounts
+        if isinstance(item, dict) and _normalize_email_key(item.get("email", ""))
+    }
+
+    to_sync = []
+    for payload in deduped_payloads:
+        email_key = _normalize_email_key(payload.get("email", ""))
+        if email_key in remote_email_set:
+            result["skipped_remote_exists"] += 1
+            continue
+        remote_email_set.add(email_key)
+        to_sync.append(payload)
+
+    if not to_sync:
+        result["message"] = "远端已存在全部可同步账号，无需新增"
+        return jsonify(result)
+
+    try:
+        remote_create_resp = requests.post(
+            f"{remote_base_url}/api/accounts/batch",
+            headers=headers,
+            json={"accounts": to_sync},
+            timeout=30,
+        )
+    except requests.RequestException as e:
+        return jsonify({"error": f"提交远端批量导入失败: {e}"}), 502
+
+    if remote_create_resp.status_code == 401:
+        return jsonify({"error": "远端鉴权失败，请检查远程管理 API Key"}), 400
+    if not remote_create_resp.ok:
+        return jsonify({"error": f"远端批量导入失败: {_extract_api_error_message(remote_create_resp)}"}), 502
+
+    try:
+        remote_create_payload = remote_create_resp.json()
+    except Exception:
+        return jsonify({"error": "远端批量导入返回了非 JSON 响应"}), 502
+
+    synced = int(remote_create_payload.get("added", 0) or 0)
+    result["synced"] = synced
+    result["failed"] = max(len(to_sync) - synced, 0)
+    result["message"] = f"同步完成：新增 {result['synced']} 个，跳过 {result['skipped_remote_exists']} 个远端已存在账号"
+    log(
+        f"☁️ Remote sync done: scope={scope} synced={result['synced']} "
+        f"skip_exists={result['skipped_remote_exists']} skip_low_quota={result['skipped_low_quota']}",
+        "SUCCESS" if result["failed"] == 0 else "WARNING",
+    )
+    return jsonify(result)
 
 @app.route("/api/accounts/<account_id>", methods=["PUT"])
 def api_update_account(account_id):
@@ -1394,10 +1703,8 @@ def api_auto_register_config():
 def api_auto_register_start():
     """Start a manual register task and return immediately."""
     data = request.json or {}
-    try:
-        count = min(max(int(data.get("count", 1) or 1), 1), 5)
-    except Exception:
-        count = 1
+    count = _normalize_manual_register_count(data.get("count", 1))
+    threads = _normalize_manual_register_threads(data.get("threads", 1), count)
     captcha_provider = str(data.get("captcha_provider") or "").strip()
 
     config = auto_register.check_config(captcha_provider)
@@ -1411,7 +1718,11 @@ def api_auto_register_start():
             "config": config,
         }), 400
 
-    task, err = _start_manual_register_task(count, config.get("captcha_provider") or captcha_provider)
+    task, err = _start_manual_register_task(
+        count,
+        threads,
+        config.get("captcha_provider") or captcha_provider,
+    )
     if err == "busy":
         return jsonify({
             "error": "Manual register task already running",
@@ -1493,7 +1804,8 @@ def api_auto_register():
         }), 409
 
     data = request.json or {}
-    count = min(data.get("count", 1), 5)  # Max 5 at a time
+    count = _normalize_manual_register_count(data.get("count", 1))
+    threads = _normalize_manual_register_threads(data.get("threads", 1), count)
     captcha_provider = str(data.get("captcha_provider") or "").strip()
 
     config = auto_register.check_config(captcha_provider)
@@ -1508,12 +1820,13 @@ def api_auto_register():
         }), 400
 
     log(
-        f"🔄 Manual auto-register triggered: {count} account(s), captcha={config.get('captcha_provider')}",
+        f"🔄 Manual auto-register triggered: {count} account(s), threads={threads}, captcha={config.get('captcha_provider')}",
         "INFO",
     )
     try:
         results = auto_register.auto_register_batch(
             count=count,
+            threads=threads,
             account_manager=acm,
             upstream_url=UPSTREAM_URL,
             origin=RITA_ORIGIN,
@@ -1529,6 +1842,7 @@ def api_auto_register():
         "ok": True,
         "registered": len(results),
         "requested": count,
+        "threads": threads,
         "accounts": results,
         "captcha_provider": config.get("captcha_provider"),
     })

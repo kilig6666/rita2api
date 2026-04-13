@@ -21,6 +21,7 @@ import string
 import requests
 import threading
 from pathlib import Path
+from queue import Empty, Queue
 
 # curl_cffi for browser TLS fingerprint (anti-bot)
 try:
@@ -1313,34 +1314,156 @@ def auto_register_one(account_manager=None, upstream_url="", origin="", captcha_
         return None
 
 
+def _make_prefixed_log_fn(base_log_fn, worker_label: str):
+    def _prefixed(message, level="INFO"):
+        text = f"[{worker_label}] {message}"
+        if base_log_fn:
+            base_log_fn(text, level)
+        else:
+            print(f"[AutoRegister] {text}")
+    return _prefixed
+
+
 def auto_register_batch(count: int = 1, account_manager=None,
                         upstream_url="", origin="", captcha_provider_override: str = "",
-                        should_stop=None) -> list[dict]:
+                        should_stop=None, threads: int = 1, on_result=None,
+                        on_failure=None, on_active_workers_change=None) -> list[dict]:
     """Register multiple accounts. Returns list of results."""
+    try:
+        total = max(int(count or 1), 1)
+    except Exception:
+        total = 1
+    try:
+        worker_count = min(max(int(threads or 1), 1), total)
+    except Exception:
+        worker_count = 1
     results = []
-    for i in range(count):
-        _ensure_not_stopped(should_stop, f"batch_before_{i+1}")
-        _log(f"📋 Registering account {i+1}/{count}...", "INFO")
+
+    def _notify_failure(item_no=None, error=None):
+        if not on_failure:
+            return
         try:
-            result = auto_register_one(
-                account_manager,
-                upstream_url,
-                origin,
-                captcha_provider_override,
-                should_stop=should_stop,
-            )
-        except RegistrationStopped as e:
-            raise RegistrationStopped(str(e), results=results) from e
-        if result:
-            results.append(result)
-        # Delay between registrations
-        if i < count - 1:
-            delay = random.uniform(5, 15)
-            _log(f"⏳ Waiting {delay:.0f}s before next registration...", "DEBUG")
+            on_failure(item_no=item_no, error=error)
+        except Exception as e:
+            _log(f"⚠️ on_failure callback failed: {e}", "WARNING")
+
+    active_state = {"count": 0}
+    active_lock = threading.Lock()
+
+    def _change_active_workers(delta: int):
+        with active_lock:
+            active_state["count"] = max(0, int(active_state["count"]) + int(delta))
+            current = active_state["count"]
+        if on_active_workers_change:
             try:
-                _sleep_with_stop(delay, should_stop)
+                on_active_workers_change(current)
+            except Exception as e:
+                _log(f"⚠️ on_active_workers_change callback failed: {e}", "WARNING")
+        return current
+
+    if worker_count <= 1:
+        for i in range(total):
+            _ensure_not_stopped(should_stop, f"batch_before_{i+1}")
+            _log(f"📋 Registering account {i+1}/{total}...", "INFO")
+            _change_active_workers(1)
+            try:
+                result = auto_register_one(
+                    account_manager,
+                    upstream_url,
+                    origin,
+                    captcha_provider_override,
+                    should_stop=should_stop,
+                )
             except RegistrationStopped as e:
                 raise RegistrationStopped(str(e), results=results) from e
+            finally:
+                _change_active_workers(-1)
+            if result:
+                results.append(result)
+                if on_result:
+                    try:
+                        on_result(result)
+                    except Exception as e:
+                        _log(f"⚠️ on_result callback failed: {e}", "WARNING")
+            else:
+                _notify_failure(item_no=i + 1)
+            # Delay between registrations
+            if i < total - 1:
+                delay = random.uniform(5, 15)
+                _log(f"⏳ Waiting {delay:.0f}s before next registration...", "DEBUG")
+                try:
+                    _sleep_with_stop(delay, should_stop)
+                except RegistrationStopped as e:
+                    raise RegistrationStopped(str(e), results=results) from e
+        return results
+
+    _log(f"⚙️ Parallel register enabled: total={total}, threads={worker_count}", "INFO")
+    result_lock = threading.Lock()
+    stop_state = {"stopped": False}
+    queue = Queue()
+    base_thread_log_fn = getattr(_thread_local, "log_fn", None)
+    base_global_log_fn = _log_fn
+    shared_log_fn = base_thread_log_fn or base_global_log_fn
+
+    for i in range(total):
+        queue.put(i + 1)
+
+    def worker(worker_no: int):
+        worker_label = f"W{worker_no}"
+        set_thread_log_fn(_make_prefixed_log_fn(shared_log_fn, worker_label))
+        try:
+            while True:
+                _ensure_not_stopped(should_stop, f"{worker_label}_before_pick")
+                try:
+                    item_no = queue.get_nowait()
+                except Empty:
+                    return
+                _log(f"📋 Registering account {item_no}/{total}...", "INFO")
+                _change_active_workers(1)
+                try:
+                    result = auto_register_one(
+                        account_manager,
+                        upstream_url,
+                        origin,
+                        captcha_provider_override,
+                        should_stop=should_stop,
+                    )
+                except RegistrationStopped:
+                    with result_lock:
+                        stop_state["stopped"] = True
+                    return
+                except Exception as e:
+                    _log(f"❌ Worker crashed on {item_no}/{total}: {e}", "ERROR")
+                    _notify_failure(item_no=item_no, error=e)
+                    continue
+                finally:
+                    _change_active_workers(-1)
+
+                if result:
+                    with result_lock:
+                        results.append(result)
+                    if on_result:
+                        try:
+                            on_result(result)
+                        except Exception as e:
+                            _log(f"⚠️ on_result callback failed: {e}", "WARNING")
+                else:
+                    _log(f"⚠️ Register account {item_no}/{total} failed", "WARNING")
+                    _notify_failure(item_no=item_no)
+        finally:
+            set_thread_log_fn(None)
+
+    worker_threads = []
+    for worker_no in range(1, worker_count + 1):
+        t = threading.Thread(target=worker, args=(worker_no,), daemon=True, name=f"rita-register-{worker_no}")
+        t.start()
+        worker_threads.append(t)
+
+    for t in worker_threads:
+        t.join()
+
+    if stop_state["stopped"] or _should_stop(should_stop):
+        raise RegistrationStopped("Registration stopped by user", results=results)
     return results
 
 
