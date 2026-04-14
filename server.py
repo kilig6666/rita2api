@@ -1780,13 +1780,43 @@ def api_batch_add():
     items = data.get("accounts", [])
     if not items:
         return jsonify({"error": "accounts array is required"}), 400
-    added = acm.add_batch(items)
-    log(f"📦 Batch added {len(added)} accounts", "SUCCESS")
+    dedupe = _parse_bool_value(data.get("dedupe", False), default=False)
+    added, summary = acm.add_batch(items, dedupe=dedupe)
+    log_message = (
+        f"📦 Batch added {len(added)} accounts"
+        if not dedupe else
+        f"📦 Batch added {len(added)} accounts (dedupe on, skip token={summary['skipped_duplicate_token']}, "
+        f"skip email={summary['skipped_duplicate_email']})"
+    )
+    log(log_message, "SUCCESS")
     return jsonify({
         "ok": True,
+        "dedupe": dedupe,
         "added": len(added),
+        "skipped_duplicate_token": summary["skipped_duplicate_token"],
+        "skipped_duplicate_email": summary["skipped_duplicate_email"],
+        "duplicate_candidates_total": summary["duplicate_candidates_total"],
         "accounts": [a.to_status() for a in added],
     }), 201
+
+
+@app.route("/api/accounts/batch-preview", methods=["POST"])
+def api_batch_preview():
+    """预检查一批账号导入时的重复与可导入数量。"""
+    data = request.json or {}
+    items = data.get("accounts", [])
+    dedupe = _parse_bool_value(data.get("dedupe", False), default=False)
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "accounts array is required"}), 400
+
+    summary = acm.preview_batch_import(items)
+    would_add = summary["importable_total"] if dedupe else summary["valid"]
+    return jsonify({
+        "ok": True,
+        "dedupe": dedupe,
+        **summary,
+        "would_add": would_add,
+    })
 
 
 @app.route("/api/accounts/export", methods=["POST"])

@@ -411,6 +411,52 @@ class AccountReservationTests(unittest.TestCase):
             "enabled": True,
         }])
 
+    def test_preview_batch_import_counts_existing_and_payload_duplicates(self):
+        self.manager.add(
+            token="tok-existing",
+            visitorid="visitor-existing",
+            name="已存在账号",
+            email="existing@example.com",
+        )
+
+        summary = self.manager.preview_batch_import([
+            {"token": "tok-existing", "email": "new@example.com"},
+            {"token": "tok-new", "email": "existing@example.com"},
+            {"token": "tok-new", "email": "dup@example.com"},
+            {"token": "", "email": "missing@example.com"},
+            {"token": "tok-unique", "email": "unique@example.com"},
+        ])
+
+        self.assertEqual(summary["total"], 5)
+        self.assertEqual(summary["valid"], 4)
+        self.assertEqual(summary["missing_token"], 1)
+        self.assertEqual(summary["duplicate_token_in_payload"], 1)
+        self.assertEqual(summary["duplicate_email_in_payload"], 0)
+        self.assertEqual(summary["duplicate_token_existing"], 1)
+        self.assertEqual(summary["duplicate_email_existing"], 1)
+        self.assertEqual(summary["duplicate_candidates_total"], 3)
+        self.assertEqual(summary["importable_total"], 1)
+
+    def test_add_batch_with_dedupe_skips_duplicates(self):
+        self.manager.add(
+            token="tok-existing",
+            name="已存在账号",
+            email="existing@example.com",
+        )
+
+        added, summary = self.manager.add_batch([
+            {"token": "tok-existing", "email": "another@example.com"},
+            {"token": "tok-new-1", "email": "existing@example.com"},
+            {"token": "tok-new-2", "email": "fresh@example.com"},
+            {"token": "tok-new-2", "email": "dup-token@example.com"},
+        ], dedupe=True)
+
+        self.assertEqual(len(added), 1)
+        self.assertEqual(added[0].token, "tok-new-2")
+        self.assertEqual(summary["added"], 1)
+        self.assertEqual(summary["skipped_duplicate_token"], 2)
+        self.assertEqual(summary["skipped_duplicate_email"], 1)
+
 
 class RitaDispatchQuotaMessageTests(unittest.TestCase):
     def test_is_quota_exhausted_message_supports_english_and_chinese(self):
@@ -585,6 +631,67 @@ class AccountExportApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), exported)
         mocked_export.assert_called_once_with()
+
+    def test_api_accounts_batch_preview_returns_summary(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        preview = {
+            "total": 5,
+            "valid": 4,
+            "missing_token": 1,
+            "duplicate_token_in_payload": 1,
+            "duplicate_email_in_payload": 0,
+            "duplicate_token_existing": 1,
+            "duplicate_email_existing": 1,
+            "duplicate_candidates_total": 3,
+            "importable_total": 1,
+        }
+        with mock.patch.object(server, "_get_auth_token", return_value="panel-token"), \
+             mock.patch.object(server.acm, "preview_batch_import", return_value=preview) as mocked_preview:
+            client = server.app.test_client()
+            response = client.post(
+                "/api/accounts/batch-preview?auth=panel-token",
+                json={"accounts": [{"token": "tok"}], "dedupe": True},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload["dedupe"])
+        self.assertEqual(payload["would_add"], 1)
+        mocked_preview.assert_called_once()
+
+    def test_api_accounts_batch_with_dedupe_returns_skip_counts(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        fake_account = mock.Mock()
+        fake_account.to_status.return_value = {"id": "acc-1"}
+        summary = {
+            "skipped_duplicate_token": 2,
+            "skipped_duplicate_email": 1,
+            "duplicate_candidates_total": 3,
+        }
+        with mock.patch.object(server, "_get_auth_token", return_value="panel-token"), \
+             mock.patch.object(server.acm, "add_batch", return_value=([fake_account], summary)) as mocked_add_batch:
+            client = server.app.test_client()
+            response = client.post(
+                "/api/accounts/batch?auth=panel-token",
+                json={"accounts": [{"token": "tok"}], "dedupe": True},
+            )
+
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertTrue(payload["dedupe"])
+        self.assertEqual(payload["added"], 1)
+        self.assertEqual(payload["skipped_duplicate_token"], 2)
+        self.assertEqual(payload["skipped_duplicate_email"], 1)
+        self.assertEqual(payload["duplicate_candidates_total"], 3)
+        mocked_add_batch.assert_called_once_with([{"token": "tok"}], dedupe=True)
 
 
 if __name__ == "__main__":

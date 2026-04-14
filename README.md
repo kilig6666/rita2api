@@ -107,7 +107,9 @@ Cookie:  token=<gosplit_token>
 |------|------|------|
 | `GET` | `/api/accounts` | 账号列表（支持 `page` / `page_size` 分页，或 `ids_only=1` 拉全量 ID） |
 | `POST` | `/api/accounts` | 添加账号 |
-| `POST` | `/api/accounts/batch` | 批量导入 |
+| `POST` | `/api/accounts/batch` | 批量导入（支持 `dedupe` 自动跳过重复） |
+| `POST` | `/api/accounts/batch-preview` | 批量导入预检查（统计缺 token、文件内重复、库内重复、预计新增） |
+| `POST` | `/api/accounts/export` | 批量导出为可直接再导入的 JSON 数组 |
 | `POST` | `/api/accounts/batch-action` | 批量操作（启用/禁用/删除/测试/刷新） |
 | `PUT` | `/api/accounts/<id>` | 编辑账号 |
 | `DELETE` | `/api/accounts/<id>` | 删除账号 |
@@ -239,7 +241,7 @@ curl http://localhost:10089/v1/messages \
 
 - **聊天广场** 选择模型直接对话，支持模型目录浏览
 - **账号注册** 查看注册配置状态，手动触发注册，实时日志
-- **账号管理** 账号列表（以邮箱为主键），批量操作（全选/勾选 → 批量测试/启用/禁用/刷新/删除），点数显示
+- **账号管理** 账号列表（以邮箱为主键），批量操作（全选/勾选 → 批量测试/启用/禁用/刷新/删除），支持 JSON 数组批量导入/导出、导入预检查与自动去重，点数显示
 - **模型广场** 按 Rita 上游分类完整展示全部模型，积分价格优先参考 `docs/价格.md`
 - **邮箱服务** GPTMail/YYDSMail/MoeMail 状态，从已注册账号选择邮箱查询验证码
 - **配置管理** 按语义分组的 inline 编辑，布尔值用 Toggle 开关，敏感值显示/隐藏，实时搜索

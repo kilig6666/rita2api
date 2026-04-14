@@ -42,6 +42,17 @@ def _mask(s: str) -> str:
     return s[:4] + "***" + s[-4:]
 
 
+def _coerce_text(value) -> str:
+    """把任意输入转成去首尾空格的字符串。"""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _normalize_email_key(value) -> str:
+    return _coerce_text(value).lower()
+
+
 def _coerce_enabled_value(value, default: int = 1) -> int:
     """将 enabled 风格输入统一成 0/1。"""
     if value is None:
@@ -283,26 +294,139 @@ class AccountManager:
         )
         return self.get(aid)
 
-    def add_batch(self, accounts: list[dict]) -> list[Account]:
-        added = []
-        for item in accounts:
-            token = item.get("token", "").strip()
+    def _build_import_candidates(self, accounts: list[dict]) -> tuple[list[dict], dict]:
+        total = len(accounts or [])
+        missing_token = 0
+        duplicate_token_in_payload = 0
+        duplicate_email_in_payload = 0
+        payload_token_seen = set()
+        payload_email_seen = set()
+        candidates: list[dict] = []
+
+        for raw_item in accounts or []:
+            item = raw_item if isinstance(raw_item, dict) else {}
+            token = _coerce_text(item.get("token"))
+            email = _coerce_text(item.get("email"))
+            email_key = _normalize_email_key(email)
+
             if not token:
+                missing_token += 1
+                continue
+
+            duplicate_token_payload = token in payload_token_seen
+            if duplicate_token_payload:
+                duplicate_token_in_payload += 1
+            else:
+                payload_token_seen.add(token)
+
+            duplicate_email_payload = bool(email_key) and email_key in payload_email_seen
+            if duplicate_email_payload:
+                duplicate_email_in_payload += 1
+            elif email_key:
+                payload_email_seen.add(email_key)
+
+            candidates.append({
+                "token": token,
+                "visitorid": _coerce_text(item.get("visitorid")),
+                "name": _coerce_text(item.get("name")),
+                "email": email,
+                "email_key": email_key,
+                "password": _coerce_text(item.get("password")),
+                "mail_provider": _coerce_text(item.get("mail_provider")),
+                "mail_api_key": _coerce_text(item.get("mail_api_key")),
+                "quota_remain": _coerce_non_negative_int(item.get("quota_remain"), default=100),
+                "enabled": bool(_coerce_enabled_value(item.get("enabled"), default=1)),
+                "duplicate_token_in_payload": duplicate_token_payload,
+                "duplicate_email_in_payload": duplicate_email_payload,
+            })
+
+        rows = self._db.fetchall("SELECT token, email FROM accounts")
+        existing_token_set = {_coerce_text(r["token"]) for r in rows if _coerce_text(r["token"])}
+        existing_email_set = {
+            _normalize_email_key(r["email"])
+            for r in rows
+            if _normalize_email_key(r["email"])
+        }
+
+        duplicate_token_existing = 0
+        duplicate_email_existing = 0
+        duplicate_candidates_total = 0
+        importable_total = 0
+
+        for item in candidates:
+            duplicate_token_existing_flag = item["token"] in existing_token_set
+            duplicate_email_existing_flag = bool(item["email_key"]) and item["email_key"] in existing_email_set
+            item["duplicate_token_existing"] = duplicate_token_existing_flag
+            item["duplicate_email_existing"] = duplicate_email_existing_flag
+            item["is_duplicate"] = any((
+                item["duplicate_token_in_payload"],
+                item["duplicate_email_in_payload"],
+                duplicate_token_existing_flag,
+                duplicate_email_existing_flag,
+            ))
+
+            if duplicate_token_existing_flag:
+                duplicate_token_existing += 1
+            if duplicate_email_existing_flag:
+                duplicate_email_existing += 1
+            if item["is_duplicate"]:
+                duplicate_candidates_total += 1
+            else:
+                importable_total += 1
+
+        summary = {
+            "total": total,
+            "valid": len(candidates),
+            "missing_token": missing_token,
+            "duplicate_token_in_payload": duplicate_token_in_payload,
+            "duplicate_email_in_payload": duplicate_email_in_payload,
+            "duplicate_token_existing": duplicate_token_existing,
+            "duplicate_email_existing": duplicate_email_existing,
+            "duplicate_candidates_total": duplicate_candidates_total,
+            "importable_total": importable_total,
+        }
+        return candidates, summary
+
+    def preview_batch_import(self, accounts: list[dict]) -> dict:
+        """预检查导入账号，统计缺失与重复。"""
+        _, summary = self._build_import_candidates(accounts)
+        return summary
+
+    def add_batch(self, accounts: list[dict], dedupe: bool = False) -> tuple[list[Account], dict]:
+        candidates, summary = self._build_import_candidates(accounts)
+        added = []
+        skipped_duplicate_token = 0
+        skipped_duplicate_email = 0
+
+        for item in candidates:
+            if dedupe and item["is_duplicate"]:
+                if item["duplicate_token_in_payload"] or item["duplicate_token_existing"]:
+                    skipped_duplicate_token += 1
+                if item["duplicate_email_in_payload"] or item["duplicate_email_existing"]:
+                    skipped_duplicate_email += 1
                 continue
             acc = self.add(
-                token=token,
-                visitorid=item.get("visitorid", "").strip(),
-                name=item.get("name", "").strip(),
-                email=item.get("email", "").strip(),
-                password=item.get("password", "").strip(),
-                mail_provider=item.get("mail_provider", "").strip(),
-                mail_api_key=item.get("mail_api_key", "").strip(),
+                token=item["token"],
+                visitorid=item["visitorid"],
+                name=item["name"],
+                email=item["email"],
+                password=item["password"],
+                mail_provider=item["mail_provider"],
+                mail_api_key=item["mail_api_key"],
                 quota_remain=item.get("quota_remain"),
                 enabled=item.get("enabled"),
             )
             if acc:
                 added.append(acc)
-        return added
+
+        result = {
+            **summary,
+            "dedupe_applied": bool(dedupe),
+            "added": len(added),
+            "skipped_duplicate_token": skipped_duplicate_token if dedupe else 0,
+            "skipped_duplicate_email": skipped_duplicate_email if dedupe else 0,
+        }
+        return added, result
 
     def update(self, account_id: str, **fields) -> Account | None:
         allowed = {"name", "token", "visitorid", "enabled",
