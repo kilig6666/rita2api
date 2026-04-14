@@ -373,6 +373,44 @@ class AccountReservationTests(unittest.TestCase):
         )
         self.assertIn(next_lease.account.id, {first.id, second.id} - {disabled.id})
 
+    def test_export_for_import_returns_rehydratable_json_array(self):
+        self.manager.add(
+            token="tok-export-1",
+            visitorid="visitor-1",
+            name="导出账号1",
+            email="user1@example.com",
+            password="pwd-1",
+            mail_provider="gptmail",
+            mail_api_key="mail-key-1",
+            quota_remain=88,
+            enabled=False,
+        )
+        second = self.manager.add(
+            token="tok-export-2",
+            visitorid="visitor-2",
+            name="导出账号2",
+            email="user2@example.com",
+            password="pwd-2",
+            mail_provider="moemail",
+            mail_api_key="mail-key-2",
+            quota_remain=66,
+            enabled=True,
+        )
+
+        exported = self.manager.export_for_import([second.id])
+
+        self.assertEqual(exported, [{
+            "token": "tok-export-2",
+            "visitorid": "visitor-2",
+            "name": "导出账号2",
+            "email": "user2@example.com",
+            "password": "pwd-2",
+            "mail_provider": "moemail",
+            "mail_api_key": "mail-key-2",
+            "quota_remain": 66,
+            "enabled": True,
+        }])
+
 
 class RitaDispatchQuotaMessageTests(unittest.TestCase):
     def test_is_quota_exhausted_message_supports_english_and_chinese(self):
@@ -500,6 +538,53 @@ class ImageGenerationOptionTests(unittest.TestCase):
         self.assertEqual(mocked_generate.call_args.kwargs["resolution"], "2K")
         self.assertEqual(mocked_generate.call_args.kwargs["n"], 3)
         self.assertEqual(mocked_generate.call_args.kwargs["image"], ["data:image/png;base64,abc"])
+
+
+class AccountExportApiTests(unittest.TestCase):
+    def test_api_accounts_export_requires_ids_for_selected_scope(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        with mock.patch.object(server, "_get_auth_token", return_value="panel-token"):
+            client = server.app.test_client()
+            response = client.post(
+                "/api/accounts/export?auth=panel-token",
+                json={"scope": "selected", "ids": []},
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("请选择至少一个账号后再导出", response.get_json()["error"])
+
+    def test_api_accounts_export_returns_json_array_for_all_scope(self):
+        try:
+            import server
+        except ModuleNotFoundError as exc:
+            self.skipTest(f"server import dependency missing: {exc}")
+
+        exported = [{
+            "token": "tok-export",
+            "visitorid": "visitor-export",
+            "name": "导出账号",
+            "email": "export@example.com",
+            "password": "pwd-export",
+            "mail_provider": "gptmail",
+            "mail_api_key": "mail-key-export",
+            "quota_remain": 123,
+            "enabled": True,
+        }]
+        with mock.patch.object(server, "_get_auth_token", return_value="panel-token"), \
+             mock.patch.object(server.acm, "export_for_import", return_value=exported) as mocked_export:
+            client = server.app.test_client()
+            response = client.post(
+                "/api/accounts/export?auth=panel-token",
+                json={"scope": "all"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), exported)
+        mocked_export.assert_called_once_with()
 
 
 if __name__ == "__main__":

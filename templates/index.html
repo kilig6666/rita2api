@@ -541,6 +541,7 @@ th .row-cb { margin: 0; }
         <button class="btn btn-primary btn-sm" onclick="showRemoteSyncModal()">☁️ 同步到远程</button>
         <button class="btn btn-outline btn-sm" onclick="showAddModal()">➕ 添加</button>
         <button class="btn btn-outline btn-sm" onclick="showBatchModal()">📦 批量导入</button>
+        <button class="btn btn-outline btn-sm" onclick="exportAllAccounts()">📤 导出全部</button>
         <button class="btn btn-outline btn-sm" onclick="resetAll()">🔄 重置故障</button>
         <button class="btn btn-outline btn-sm" onclick="runHealthCheck()">🏥 健康检查</button>
         <button class="btn btn-warning btn-sm" onclick="purgeInvalid()">🗑 清除无效</button>
@@ -563,6 +564,7 @@ th .row-cb { margin: 0; }
     <div class="batch-toolbar" id="batchToolbar">
       <span class="batch-count">已选 <strong id="batchSelectedCount">0</strong> 项</span>
       <div class="batch-actions">
+        <button class="btn btn-sm btn-outline" onclick="exportSelectedAccounts()">📤 导出勾选</button>
         <button class="btn btn-sm btn-outline" onclick="showRemoteSyncModal('selected')">☁️ 同步远程</button>
         <button class="btn btn-sm btn-outline" onclick="batchAction('test')">🧪 批量测试</button>
         <button class="btn btn-sm btn-success" onclick="batchAction('enable')">▶ 批量启用</button>
@@ -824,13 +826,15 @@ th .row-cb { margin: 0; }
 <div class="modal-overlay" id="batchModal">
   <div class="modal">
     <h2>📦 批量导入账号</h2>
-    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">支持 JSON 数组或每行一个 "token,visitorid,name"</p>
+    <p style="font-size:12px;color:var(--text2);margin-bottom:8px">支持上传 <code>.json</code> 文件，或直接粘贴 JSON 数组</p>
     <div style="font-size:12px;color:var(--text2);background:var(--bg);padding:10px;border-radius:6px;margin-bottom:12px;font-family:monospace;line-height:1.7">
-      格式1: [{"token":"abc","visitorid":"xyz","name":"账号1"}, ...]<br>
-      格式2: token1,visitorid1,名称1
+      [{"token":"abc","visitorid":"xyz","name":"账号1","email":"user@example.com","password":"***","mail_provider":"gptmail","mail_api_key":"***","quota_remain":100,"enabled":true}, ...]
     </div>
+    <label>上传 JSON 文件</label>
+    <input type="file" id="batchFile" accept=".json,application/json" onchange="handleBatchFileChange(this)">
+    <div id="batchFileName" style="font-size:12px;color:var(--text2);margin-top:8px"></div>
     <label>账号数据</label>
-    <textarea id="batchData" placeholder='粘贴 JSON 数组或每行一个 "token,visitorid,name"'></textarea>
+    <textarea id="batchData" placeholder='粘贴 JSON 数组，例如 [{"token":"abc","visitorid":"xyz","name":"账号1"}]'></textarea>
     <div class="modal-actions">
       <button class="btn btn-outline" onclick="closeModal('batchModal')">取消</button>
       <button class="btn btn-primary" onclick="batchImport()">导入</button>
@@ -1256,8 +1260,64 @@ function esc(s) { return (String(s)||'').replace(/&/g,'&amp;').replace(/</g,'&lt
 
 // Account CRUD
 function showAddModal() { ['addToken','addName','addVisitorId','addEmail','addPassword','addMailApiKey'].forEach(id => document.getElementById(id).value=''); document.getElementById('addMailProvider').value=''; document.getElementById('addModal').classList.add('show'); document.getElementById('addToken').focus(); }
-function showBatchModal() { document.getElementById('batchModal').classList.add('show'); document.getElementById('batchData').focus(); }
+function showBatchModal() {
+  const fileInput = document.getElementById('batchFile');
+  document.getElementById('batchData').value = '';
+  document.getElementById('batchFileName').textContent = '';
+  if (fileInput) fileInput.value = '';
+  document.getElementById('batchModal').classList.add('show');
+  document.getElementById('batchData').focus();
+}
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
+
+function summarizeImportAccounts(accounts) {
+  const tokenSeen = new Set();
+  const emailSeen = new Set();
+  let missingToken = 0;
+  let duplicateToken = 0;
+  let duplicateEmail = 0;
+
+  for (const item of accounts) {
+    const token = String(item?.token || '').trim();
+    const email = String(item?.email || '').trim().toLowerCase();
+    if (!token) {
+      missingToken += 1;
+    } else if (tokenSeen.has(token)) {
+      duplicateToken += 1;
+    } else {
+      tokenSeen.add(token);
+    }
+
+    if (email) {
+      if (emailSeen.has(email)) duplicateEmail += 1;
+      else emailSeen.add(email);
+    }
+  }
+
+  return {
+    total: accounts.length,
+    valid: tokenSeen.size,
+    missingToken,
+    duplicateToken,
+    duplicateEmail,
+  };
+}
+
+function confirmImportPreview(summary) {
+  const lines = [
+    '即将导入账号，预览如下：',
+    `总条数：${summary.total}`,
+    `有效条数：${summary.valid}`,
+    `缺少 Token：${summary.missingToken}`,
+    `重复 Token：${summary.duplicateToken}`,
+    `重复邮箱：${summary.duplicateEmail}`,
+  ];
+  if (summary.duplicateToken > 0 || summary.duplicateEmail > 0) {
+    lines.push('', '提示：当前仅做预览提示，不会自动去重。');
+  }
+  lines.push('', '是否继续导入？');
+  return confirm(lines.join('\n'));
+}
 
 function setRemoteSyncResult(type, text) {
   const el = document.getElementById('remoteSyncResult');
@@ -1355,19 +1415,88 @@ async function addAccount() {
   } catch(e) { if (e.message !== 'Unauthorized') toast('添加失败: '+e.message, 'error'); }
 }
 
+async function handleBatchFileChange(input) {
+  const file = input?.files?.[0];
+  const fileNameEl = document.getElementById('batchFileName');
+  if (!file) {
+    if (fileNameEl) fileNameEl.textContent = '';
+    return;
+  }
+  if (fileNameEl) fileNameEl.textContent = `已选择文件：${file.name}`;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) throw new Error('not array');
+    document.getElementById('batchData').value = JSON.stringify(parsed, null, 2);
+    toast(`已载入 ${parsed.length} 条账号 JSON`, 'success');
+  } catch (e) {
+    input.value = '';
+    if (fileNameEl) fileNameEl.textContent = '';
+    toast('上传文件不是合法的 JSON 数组', 'error');
+  }
+}
+
 async function batchImport() {
   const raw = document.getElementById('batchData').value.trim();
   if (!raw) { toast('请输入数据', 'error'); return; }
   let accounts;
   try { accounts = JSON.parse(raw); if (!Array.isArray(accounts)) throw new Error('not array'); }
   catch { accounts = raw.split('\n').filter(l=>l.trim()).map(line => { const parts = line.split(',').map(s=>s.trim()); return {token:parts[0]||'',visitorid:parts[1]||'',name:parts[2]||''}; }); }
-  accounts = accounts.filter(a => a.token);
+  const summary = summarizeImportAccounts(accounts);
+  accounts = accounts.filter(a => String(a?.token || '').trim());
   if (!accounts.length) { toast('未解析到有效账号', 'error'); return; }
+  if (!confirmImportPreview(summary)) return;
   try {
     const res = await api('POST', '/api/accounts/batch', { accounts });
     closeModal('batchModal'); document.getElementById('batchData').value='';
+    const fileInput = document.getElementById('batchFile');
+    document.getElementById('batchFileName').textContent = '';
+    if (fileInput) fileInput.value = '';
     toast(`成功导入 ${res.added || 0} 个账号`, 'success'); loadAccounts(); loadStats();
   } catch(e) { if (e.message !== 'Unauthorized') toast('导入失败: '+e.message, 'error'); }
+}
+
+function buildExportFilename(scope, count) {
+  const now = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  return `accounts-${scope}-${count}-${stamp}.json`;
+}
+
+function downloadJsonArrayFile(data, filename) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function exportAccounts(scope, ids = []) {
+  try {
+    const data = await api('POST', '/api/accounts/export', { scope, ids });
+    if (!Array.isArray(data) || !data.length) {
+      toast('暂无可导出的账号', 'info');
+      return;
+    }
+    downloadJsonArrayFile(data, buildExportFilename(scope, data.length));
+    toast(`已导出 ${data.length} 个账号`, 'success');
+  } catch (e) {
+    if (e.message !== 'Unauthorized') toast('导出失败: ' + e.message, 'error');
+  }
+}
+
+async function exportSelectedAccounts() {
+  const ids = [..._selectedIds];
+  if (!ids.length) { toast('请先选择账号', 'error'); return; }
+  await exportAccounts('selected', ids);
+}
+
+async function exportAllAccounts() {
+  await exportAccounts('all');
 }
 
 async function deleteAccount(id, name) {

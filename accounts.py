@@ -110,6 +110,22 @@ def _row_to_status(row) -> dict:
     }
 
 
+def _row_to_import_payload(row) -> dict:
+    """将账号行转换成可直接重新导入的 JSON 载荷。"""
+    d = dict(row)
+    return {
+        "token": d.get("token", ""),
+        "visitorid": d.get("visitorid", ""),
+        "name": d.get("name", ""),
+        "email": d.get("email", ""),
+        "password": d.get("password", ""),
+        "mail_provider": d.get("mail_provider", ""),
+        "mail_api_key": d.get("mail_api_key", ""),
+        "quota_remain": d.get("quota_remain", 100),
+        "enabled": bool(d.get("enabled", 1)),
+    }
+
+
 class Account:
     """Lightweight account object for in-flight use (not persisted directly)."""
 
@@ -154,7 +170,6 @@ class Account:
             "disabled_at": self.disabled_at,
             "created_at": self.created_at,
         })
-
 
 class AccountManager:
     """
@@ -226,6 +241,27 @@ class AccountManager:
     def list_all_ids(self) -> list[str]:
         rows = self._db.fetchall("SELECT id FROM accounts ORDER BY created_at DESC")
         return [r["id"] for r in rows]
+
+    def export_for_import(self, account_ids: list[str] | None = None) -> list[dict]:
+        """导出可直接回灌到 /api/accounts/batch 的 JSON 数组。"""
+        if account_ids:
+            normalized_ids = []
+            seen = set()
+            for account_id in account_ids:
+                key = str(account_id or "").strip()
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                normalized_ids.append(key)
+            exported = []
+            for account_id in normalized_ids:
+                row = self._db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))
+                if row is not None:
+                    exported.append(_row_to_import_payload(row))
+            return exported
+
+        rows = self._db.fetchall("SELECT * FROM accounts ORDER BY created_at DESC")
+        return [_row_to_import_payload(r) for r in rows]
 
     def get(self, account_id: str) -> Account | None:
         row = self._db.fetchone("SELECT * FROM accounts WHERE id=?", (account_id,))

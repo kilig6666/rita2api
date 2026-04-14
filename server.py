@@ -1789,6 +1789,27 @@ def api_batch_add():
     }), 201
 
 
+@app.route("/api/accounts/export", methods=["POST"])
+def api_export_accounts():
+    """导出可直接重新导入的账号 JSON 数组。"""
+    data = request.json or {}
+    scope = str(data.get("scope", "selected") or "selected").strip().lower()
+    selected_ids = data.get("ids", [])
+
+    if scope not in {"selected", "all"}:
+        return jsonify({"error": "scope must be selected or all"}), 400
+
+    if scope == "selected":
+        if not isinstance(selected_ids, list) or not selected_ids:
+            return jsonify({"error": "请选择至少一个账号后再导出"}), 400
+        exported = acm.export_for_import(selected_ids)
+    else:
+        exported = acm.export_for_import()
+
+    log(f"📤 Exported {len(exported)} accounts for import (scope={scope})", "INFO")
+    return jsonify(exported)
+
+
 @app.route("/api/accounts/sync-remote", methods=["POST"])
 def api_sync_accounts_to_remote():
     """将本地账号按邮箱去重后同步到远端管理服务。"""
